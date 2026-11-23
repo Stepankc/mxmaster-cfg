@@ -11,9 +11,10 @@ POLICY_DST="/usr/share/polkit-1/actions/org.mxmaster.cfg.policy"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Re-exec with pkexec…" >&2
+  SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
   exec pkexec env DISPLAY="${DISPLAY:-}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
     XAUTHORITY="${XAUTHORITY:-}" \
-    bash "$0" "$@"
+    bash "$SELF" "$@"
 fi
 
 install -d /usr/local/libexec

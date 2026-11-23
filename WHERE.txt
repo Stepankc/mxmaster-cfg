@@ -1,1 +1,8 @@
-/home/stepan/projects/mxmaster-cfg
+Local working tree (source of truth):
+  /home/stepan/projects/mxmaster-cfg
+
+Public GitHub repository:
+  https://github.com/Stepankc/mxmaster-cfg
+
+Clone:
+  git clone https://github.com/Stepankc/mxmaster-cfg.git

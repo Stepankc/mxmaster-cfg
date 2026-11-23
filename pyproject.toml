@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mxmaster-cfg"
 version = "0.2.0"
-description = "Linux GUI configurator for Logitech MX Master lineup (wraps logiops). Name TBD."
+description = "Linux GUI for Logitech MX Master (logiops): DPI, SmartShift, gestures, hi-res scroll — Debian/Ubuntu/Kubuntu"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = ">=3.10"
-authors = [{ name = "Stepan / contributors" }]
-keywords = ["logitech", "mx-master", "logiops", "hidpp", "kde"]
+authors = [{ name = "Stepan Korobkov", email = "stepan.korobkov@maergroup.ru" }]
+keywords = ["logitech", "mx-master", "logiops", "linux", "kde", "pyside6", "hidpp"]
 dependencies = [
   "PySide6>=6.5",
   "PyYAML>=6.0",
