@@ -1,0 +1,32 @@
+Source: mxmaster-cfg
+Section: utils
+Priority: optional
+Maintainer: Stepan <stepan@example.invalid>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               python3-all,
+               python3-setuptools,
+               python3-yaml,
+               python3-pyside6.qtwidgets | python3-pyside6
+Standards-Version: 4.6.2
+Homepage: https://example.invalid/mxmaster-cfg
+Rules-Requires-Root: no
+
+Package: mxmaster-cfg
+Architecture: all
+Depends: ${python3:Depends},
+         ${misc:Depends},
+         python3-yaml,
+         python3-pyside6.qtwidgets | python3-pyside6,
+# logiops: prefer distro package when ≥ 0.3 with Bolt.
+# If Ubuntu/Debian package is too old, replace with our vendored/forked
+# binary package name after the hardware spike (TBD).
+         logiops (>= 0.3) | logiops-bolt-tbd
+Suggests: solaar
+Description: GUI configurator for Logitech MX Master mice (via logiops)
+ Qt (PySide6) frontend and profile adapter for the MX Master lineup on
+ Debian/Ubuntu. Talks to logid (logiops) over D-Bus and/or writes logid.cfg.
+ .
+ Project name TBD. Licensed GPL-3.0-or-later.
+ .
+ Note: do not run concurrently with Solaar/OpenLogi on the same HID++ device.

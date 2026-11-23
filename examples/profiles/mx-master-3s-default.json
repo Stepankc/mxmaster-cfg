@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "name": "3S — default demo (JSON twin)",
+    "description": "Same content as mx-master-3s-default.yaml for schema validation demos",
+    "transport": "any"
+  },
+  "device": {
+    "name": "MX Master 3S",
+    "family": "mx-master-3s",
+    "pid_hint": "046d:b034"
+  },
+  "dpi": 1000,
+  "smartshift": {
+    "on": true,
+    "threshold": 30
+  },
+  "hiresscroll": {
+    "hires": true,
+    "invert": false,
+    "target": false
+  },
+  "buttons": [
+    {
+      "cid": "0xc3",
+      "label": "gesture",
+      "action": {
+        "type": "Gestures",
+        "gestures": [
+          {
+            "direction": "Up",
+            "mode": "OnRelease",
+            "action": { "type": "Keypress", "keys": ["KEY_LEFTMETA", "KEY_UP"] }
+          },
+          {
+            "direction": "Down",
+            "mode": "OnRelease",
+            "action": { "type": "Keypress", "keys": ["KEY_LEFTMETA", "KEY_DOWN"] }
+          },
+          {
+            "direction": "Left",
+            "mode": "OnRelease",
+            "action": { "type": "Keypress", "keys": ["KEY_LEFTMETA", "KEY_LEFT"] }
+          },
+          {
+            "direction": "Right",
+            "mode": "OnRelease",
+            "action": { "type": "Keypress", "keys": ["KEY_LEFTMETA", "KEY_RIGHT"] }
+          }
+        ]
+      }
+    },
+    {
+      "cid": "0xc4",
+      "label": "mode",
+      "action": { "type": "ToggleSmartShift" }
+    }
+  ]
+}

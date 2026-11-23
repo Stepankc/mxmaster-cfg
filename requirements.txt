@@ -1,0 +1,8 @@
+# Runtime (MVP scaffold)
+PySide6>=6.5
+PyYAML>=6.0
+jsonschema>=4.0
+
+# Optional D-Bus helpers (system bus talks to logid)
+# dasbus is nicer if available; jeepney works as pure-Python fallback.
+dasbus>=1.7; platform_system=="Linux"

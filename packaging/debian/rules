@@ -1,0 +1,13 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Sketch only — not yet wired to a real Debian source package layout.
+
+export DH_VERBOSE = 1
+export PYBUILD_NAME = mxmaster-cfg
+
+%:
+	dh $@ --with python3 --buildsystem=pybuild
+
+override_dh_auto_test:
+	# Tests require optional display/D-Bus; skip in packaging sketch.
+	@echo "skipping tests in packaging sketch"

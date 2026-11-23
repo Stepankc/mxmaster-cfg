@@ -1,0 +1,78 @@
+# Example MVP profile — MX Master 3S (reference device).
+# No app-specific profiles in MVP.
+schema_version: 1
+
+meta:
+  name: "3S — default demo"
+  description: "SmartShift + gesture button remaps for spike/apply via CfgWriter"
+  transport: any
+
+device:
+  name: "MX Master 3S"
+  family: mx-master-3s
+  pid_hint: "046d:b034"   # Bluetooth; Bolt uses receiver 046d:c548
+
+dpi: 1000
+
+smartshift:
+  on: true
+  threshold: 30
+  # torque: 50   # uncomment if device/feature exposes torque in logiops
+
+hiresscroll:
+  hires: true
+  invert: false
+  target: false
+
+buttons:
+  # Gesture button (CID 0xc3 / 195) — typical 3S
+  - cid: 0xc3
+    label: gesture
+    action:
+      type: Gestures
+      gestures:
+        - direction: Up
+          mode: OnRelease
+          action:
+            type: Keypress
+            keys: ["KEY_LEFTMETA", "KEY_UP"]
+        - direction: Down
+          mode: OnRelease
+          action:
+            type: Keypress
+            keys: ["KEY_LEFTMETA", "KEY_DOWN"]
+        - direction: Left
+          mode: OnRelease
+          action:
+            type: Keypress
+            keys: ["KEY_LEFTMETA", "KEY_LEFT"]
+        - direction: Right
+          mode: OnRelease
+          action:
+            type: Keypress
+            keys: ["KEY_LEFTMETA", "KEY_RIGHT"]
+        - direction: None
+          mode: OnRelease
+          action:
+            type: Keypress
+            keys: ["KEY_LEFTMETA"]
+
+  # Mode / SmartShift toggle (CID 0xc4 / 196)
+  - cid: 0xc4
+    label: mode
+    action:
+      type: ToggleSmartShift
+
+  # Forward (0x56 / 86) → browser forward
+  - cid: 0x56
+    label: forward
+    action:
+      type: Keypress
+      keys: ["KEY_FORWARD"]
+
+  # Back (0x53 / 83) → browser back
+  - cid: 0x53
+    label: back
+    action:
+      type: Keypress
+      keys: ["KEY_BACK"]

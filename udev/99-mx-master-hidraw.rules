@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Template udev rules for MX Master + logiops / uinput divert.
+# Install sketch: /usr/lib/udev/rules.d/99-mx-master-hidraw.rules
+# After install: sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Vendor Logitech = 046d
+# BT MX Master 3S often 046d:b034; Bolt receiver often 046d:c548
+# Expand device DB as other MX Master PIDs are confirmed on spike.
+
+# Allow users in group "plugdev" (or INPUT_GROUP) to talk HID++ via hidraw.
+# Prefer TAG+="uaccess" on systemd seats when available.
+
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# Bolt receiver (Logi Bolt)
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c548", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# MX Master 3S Bluetooth (verify PID with lsusb / solaar on Stepan's machine)
+KERNEL=="hidraw*", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="b034", MODE="0660", GROUP="plugdev", TAG+="uaccess"
+
+# uinput — needed for gesture/key simulation under Wayland
+KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput", TAG+="uaccess"
+
+# Optional: readable input events for some BT/uhid diagnostics
+# KERNEL=="event*", ATTRS{idVendor}=="046d", MODE="0640", GROUP="input"
