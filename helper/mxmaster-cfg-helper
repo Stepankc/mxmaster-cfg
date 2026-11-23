@@ -28,6 +28,7 @@ IFACE_DEVICES = "pizza.pixl.LogiOps.Devices"
 IFACE_DEVICE = "pizza.pixl.LogiOps.Device"
 IFACE_DPI = "pizza.pixl.LogiOps.DPI"
 IFACE_SMARTSHIFT = "pizza.pixl.LogiOps.SmartShift"
+IFACE_HIRESSCROLL = "pizza.pixl.LogiOps.HiresScroll"
 IFACE_BUTTON = "pizza.pixl.LogiOps.Button"
 IFACE_BUTTONS = "pizza.pixl.LogiOps.Buttons"
 DEFAULT_CFG = Path("/etc/logid.cfg")
@@ -169,6 +170,7 @@ def cmd_status(_args: argparse.Namespace) -> int:
                 "или дождитесь HID++ (иногда нужен soft USB reset ресивера)."
             )
         info.update(_read_smartshift(path))
+        info.update(_read_hiresscroll(path))
         devices.append(info)
 
     if logid_active and not paths:
@@ -199,6 +201,44 @@ def _parse_yyy(text: str) -> list[int]:
     while len(vals) < 3:
         vals.append(0)
     return vals
+
+
+def _parse_bbb(text: str) -> list[bool]:
+    """Parse busctl ``bbb true false false`` into three bools."""
+    parts = text.strip().split()
+    if parts and parts[0] == "bbb":
+        parts = parts[1:]
+    vals: list[bool] = []
+    for token in parts[:3]:
+        vals.append(token == "true")
+    while len(vals) < 3:
+        vals.append(False)
+    return vals
+
+
+def _read_hiresscroll(path: str) -> dict[str, Any]:
+    """Read HiresScroll.GetConfig → hires / invert / target (divert).
+
+    logiops 0.3.5 IPC: ``bbb`` = (hires, invert, target). There is no separate
+    ``divert`` field — HID++ Mode::Target is exposed as cfg ``target``.
+    Defaults when unset (source getConfig): hires=true, invert=false, target=false.
+    """
+    out: dict[str, Any] = {}
+    try:
+        raw = _call(path, IFACE_HIRESSCROLL, "GetConfig", timeout=8.0)
+        hires, invert, target = _parse_bbb(raw)
+        out["hiresscroll"] = {
+            "hires": hires,
+            "invert": invert,
+            "target": target,
+            "divert": target,  # alias for HID++ divert
+            "raw": raw,
+            "methods": ["GetConfig", "SetHires", "SetInvert", "SetTarget", "SetUp", "SetDown"],
+        }
+    except Exception as exc:  # noqa: BLE001
+        out["hiresscroll"] = None
+        out["hiresscroll_error"] = str(exc)
+    return out
 
 
 def _read_smartshift(path: str) -> dict[str, Any]:
@@ -253,6 +293,66 @@ def cmd_get_smartshift(args: argparse.Namespace) -> int:
         return _ok(data)
     except Exception as exc:  # noqa: BLE001
         return _fail(str(exc), path=path)
+
+
+def cmd_get_hiresscroll(args: argparse.Namespace) -> int:
+    path = _device_index_path(args.device)
+    try:
+        data = {"path": path, **_read_hiresscroll(path)}
+        if data.get("hiresscroll") is None and data.get("hiresscroll_error"):
+            return _fail(str(data["hiresscroll_error"]), path=path)
+        return _ok(data)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(str(exc), path=path)
+
+
+def cmd_set_hiresscroll(args: argparse.Namespace) -> int:
+    """Live HiresScroll via D-Bus. Prefer apply-cfg to persist across restart.
+
+    SetHires / SetInvert / SetTarget often time out on Bolt (same as SmartShift
+    Set*); readback via GetConfig is authoritative.
+    """
+    path = _device_index_path(args.device)
+    if args.hires is None and args.invert is None and args.target is None:
+        return _fail("provide at least one of --hires / --invert / --target")
+
+    errors: list[str] = []
+
+    def _try_call(label: str, method: str, value: str) -> None:
+        try:
+            _call(path, IFACE_HIRESSCROLL, method, "b", value, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+
+    if args.hires is not None:
+        _try_call("SetHires", "SetHires", "true" if args.hires == "true" else "false")
+    if args.invert is not None:
+        _try_call(
+            "SetInvert", "SetInvert", "true" if args.invert == "true" else "false"
+        )
+    if args.target is not None:
+        _try_call(
+            "SetTarget", "SetTarget", "true" if args.target == "true" else "false"
+        )
+
+    data = {"path": path, **_read_hiresscroll(path)}
+    hs = data.get("hiresscroll") or {}
+    matched = True
+    if args.hires is not None and bool(hs.get("hires")) != (args.hires == "true"):
+        matched = False
+    if args.invert is not None and bool(hs.get("invert")) != (args.invert == "true"):
+        matched = False
+    if args.target is not None and bool(hs.get("target")) != (args.target == "true"):
+        matched = False
+    if matched and hs:
+        if errors:
+            data["dbus_warnings"] = errors
+        return _ok(data)
+    return _fail(
+        "; ".join(errors) or "hiresscroll set failed",
+        path=path,
+        **{k: v for k, v in data.items() if k != "path"},
+    )
 
 
 def cmd_set_smartshift(args: argparse.Namespace) -> int:
@@ -534,6 +634,23 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--threshold", type=int, default=None)
     ss.add_argument("--torque", type=int, default=None)
 
+    gh = sub.add_parser("get-hiresscroll", help="HiresScroll.GetConfig (hires/invert/target)")
+    gh.add_argument("--device", type=int, default=0)
+
+    sh = sub.add_parser(
+        "set-hiresscroll",
+        help="live HiresScroll SetHires/SetInvert/SetTarget (prefer apply-cfg)",
+    )
+    sh.add_argument("--device", type=int, default=0)
+    sh.add_argument("--hires", choices=["true", "false"], default=None)
+    sh.add_argument("--invert", choices=["true", "false"], default=None)
+    sh.add_argument(
+        "--target",
+        choices=["true", "false"],
+        default=None,
+        help="divert wheel to logiops (HID++ Target / cfg target)",
+    )
+
     a = sub.add_parser("apply-cfg", help="write logid.cfg + restart logid")
     a.add_argument("--file", help="path to cfg text (else stdin)")
     a.add_argument("--dest", default=str(DEFAULT_CFG))
@@ -560,6 +677,8 @@ def main(argv: list[str] | None = None) -> int:
         "set-button-action": cmd_set_button_action,
         "get-smartshift": cmd_get_smartshift,
         "set-smartshift": cmd_set_smartshift,
+        "get-hiresscroll": cmd_get_hiresscroll,
+        "set-hiresscroll": cmd_set_hiresscroll,
         "apply-cfg": cmd_apply_cfg,
     }
     return dispatch[args.cmd](args)

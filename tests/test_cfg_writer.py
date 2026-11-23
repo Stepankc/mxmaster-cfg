@@ -19,6 +19,19 @@ def test_render_contains_device_and_smartshift() -> None:
     assert "Gestures" in text
 
 
+def test_render_hiresscroll_fields() -> None:
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "dpi": 1000,
+        "hiresscroll": {"hires": False, "invert": True, "target": True},
+    }
+    text = CfgWriter(profile).render()
+    assert "hiresscroll:" in text
+    assert "hires: false;" in text
+    assert "invert: true;" in text
+    assert "target: true;" in text
+
+
 def test_render_cycle_dpi_in_gestures() -> None:
     profile = {
         "device": {"name": "MX Master 3S"},

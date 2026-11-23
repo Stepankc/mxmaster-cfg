@@ -156,6 +156,8 @@ class CfgWriter:
             parts.append("    };")
 
         if hiresscroll:
+            # logiops 0.3.5: hires / invert / target (target = HID++ divert).
+            # No separate ``divert`` key in cfg.
             hires = "true" if hiresscroll.get("hires", True) else "false"
             invert = "true" if hiresscroll.get("invert", False) else "false"
             target = "true" if hiresscroll.get("target", False) else "false"

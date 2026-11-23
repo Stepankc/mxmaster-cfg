@@ -195,3 +195,25 @@ def set_smartshift(
     if torque is not None:
         argv.extend(["--torque", str(torque)])
     return run_helper(argv).data
+
+
+def get_hiresscroll(device: int = 0) -> dict[str, Any]:
+    return run_helper(["get-hiresscroll", "--device", str(device)]).data
+
+
+def set_hiresscroll(
+    *,
+    hires: bool | None = None,
+    invert: bool | None = None,
+    target: bool | None = None,
+    device: int = 0,
+) -> dict[str, Any]:
+    """Live HiresScroll. ``target`` is logiops divert (HID++ Mode::Target)."""
+    argv: list[str] = ["set-hiresscroll", "--device", str(device)]
+    if hires is not None:
+        argv.extend(["--hires", "true" if hires else "false"])
+    if invert is not None:
+        argv.extend(["--invert", "true" if invert else "false"])
+    if target is not None:
+        argv.extend(["--target", "true" if target else "false"])
+    return run_helper(argv).data

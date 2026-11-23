@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Main window: device, DPI, SmartShift, remap, gesture button — Apply via helper."""
+"""Main window: device, DPI, SmartShift, HiRes, remap, gestures — Apply via helper."""
 
 from __future__ import annotations
 
@@ -81,8 +81,8 @@ CYCLE_DPI_LIST = [400, 600, 800, 1000, 1200, 1400, 1600]
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MX Master — конфигуратор (MVP+)")
-        self.resize(720, 720)
+        self.setWindowTitle("MX Master Config (Linux)")
+        self.resize(720, 800)
         self._last_status: dict[str, Any] = {}
 
         scroll = QScrollArea()
@@ -92,7 +92,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(root)
         layout = QVBoxLayout(root)
 
-        title = QLabel("MX Master Linux (имя TBD)")
+        title = QLabel("MX Master Config (Linux)")
         font = title.font()
         font.setPointSize(16)
         font.setBold(True)
@@ -101,8 +101,8 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(
             QLabel(
-                "DPI · SmartShift · remap · жесты (CID 0xc3) → polkit-helper → "
-                "logid 0.3.5 (Bolt)."
+                "DPI · SmartShift · HiRes Wheel · remap · жесты (CID 0xc3) → "
+                "polkit-helper → logid 0.3.5 (Bolt)."
             )
         )
 
@@ -159,6 +159,39 @@ class MainWindow(QMainWindow):
         ss_form.addRow("Torque:", self.spin_ss_torque)
         ss_form.addRow(self.lbl_ss_torque_hint)
         layout.addWidget(ss_box)
+
+        # --- HiRes Wheel (feature 0x2121) ---
+        hr_box = QGroupBox("Hi-res scroll (HiresScroll / 0x2121)")
+        hr_form = QFormLayout(hr_box)
+        self.chk_hr_hires = QCheckBox("Hi-res (высокое разрешение колеса)")
+        self.chk_hr_hires.setChecked(True)
+        self.chk_hr_hires.setToolTip(
+            "logiops hiresscroll.hires → HID++ HiRes mode. "
+            "GetConfig: первый bool из bbb."
+        )
+        self.chk_hr_invert = QCheckBox("Invert (инверсия направления)")
+        self.chk_hr_invert.setChecked(False)
+        self.chk_hr_invert.setToolTip("logiops hiresscroll.invert")
+        self.chk_hr_target = QCheckBox("Target / divert (колесо → logiops)")
+        self.chk_hr_target.setChecked(False)
+        self.chk_hr_target.setToolTip(
+            "logiops hiresscroll.target = HID++ divert (Mode::Target). "
+            "При true события колеса уходят в logiops (SetUp/SetDown); "
+            "обычно оставляйте выкл. для обычного скролла."
+        )
+        self.lbl_hr_state = QLabel("D-Bus: —")
+        self.lbl_hr_state.setStyleSheet("color: #555;")
+        self.lbl_hr_hint = QLabel(
+            "В cfg: hires / invert / target. Отдельного поля divert в logiops "
+            "0.3.5 нет — target и есть divert."
+        )
+        self.lbl_hr_hint.setWordWrap(True)
+        hr_form.addRow(self.chk_hr_hires)
+        hr_form.addRow(self.chk_hr_invert)
+        hr_form.addRow(self.chk_hr_target)
+        hr_form.addRow(self.lbl_hr_state)
+        hr_form.addRow(self.lbl_hr_hint)
+        layout.addWidget(hr_box)
 
         # --- Remap ---
         remap_box = QGroupBox("Remap Forward/Back")
@@ -256,7 +289,11 @@ class MainWindow(QMainWindow):
             "device": {"name": "MX Master 3S"},
             "dpi": dpi,
             "smartshift": smartshift,
-            "hiresscroll": {"hires": True, "invert": False, "target": False},
+            "hiresscroll": {
+                "hires": self.chk_hr_hires.isChecked(),
+                "invert": self.chk_hr_invert.isChecked(),
+                "target": self.chk_hr_target.isChecked(),
+            },
             "buttons": [
                 {
                     "cid": CID_GESTURE,
@@ -343,6 +380,22 @@ class MainWindow(QMainWindow):
         else:
             self.lbl_ss_state.setText("состояние: н/д")
 
+        hs = dev.get("hiresscroll")
+        if isinstance(hs, dict):
+            hires = bool(hs.get("hires", True))
+            invert = bool(hs.get("invert", False))
+            target = bool(hs.get("target", False))
+            self.chk_hr_hires.setChecked(hires)
+            self.chk_hr_invert.setChecked(invert)
+            self.chk_hr_target.setChecked(target)
+            self.lbl_hr_state.setText(
+                "bbb hires=%s invert=%s target=%s"
+                % (hires, invert, target)
+            )
+        else:
+            err = dev.get("hiresscroll_error") or "н/д"
+            self.lbl_hr_state.setText("D-Bus: %s" % err)
+
         self.statusBar().showMessage(
             "Устройств: %s · logid=%s"
             % (data.get("device_count"), data.get("logid_active"))
@@ -360,10 +413,13 @@ class MainWindow(QMainWindow):
 
         quirk = result.get("quirk")
         ss = profile["smartshift"]
+        hr = profile["hiresscroll"]
         msg = (
             f"Записано {result.get('wrote')}\n"
             f"DPI: {profile['dpi']}\n"
             f"SmartShift: on={ss.get('on')} threshold={ss.get('threshold')}\n"
+            f"HiRes: hires={hr.get('hires')} invert={hr.get('invert')} "
+            f"target={hr.get('target')}\n"
             f"Жесты: CID 0xc3 ({len(profile['buttons'][0]['action']['gestures'])} направлений)\n"
             f"devices: {result.get('devices') or []}\n"
             f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
