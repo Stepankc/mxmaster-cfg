@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Privileged helper for MX Master configurator (run via pkexec as root).
+
+Talks to logid on the system D-Bus (root-only stock policy) and can write
+/etc/logid.cfg + restart logid. Invoked from the user-session GUI through
+pkexec so Stepan sees a polkit password dialog.
+
+Subcommands print JSON on stdout (ok/error). Exit 0 on success.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+SERVICE = "pizza.pixl.LogiOps"
+ROOT = "/pizza/pixl/logiops"
+IFACE_DEVICES = "pizza.pixl.LogiOps.Devices"
+IFACE_DEVICE = "pizza.pixl.LogiOps.Device"
+IFACE_DPI = "pizza.pixl.LogiOps.DPI"
+IFACE_SMARTSHIFT = "pizza.pixl.LogiOps.SmartShift"
+IFACE_BUTTON = "pizza.pixl.LogiOps.Button"
+IFACE_BUTTONS = "pizza.pixl.LogiOps.Buttons"
+DEFAULT_CFG = Path("/etc/logid.cfg")
+
+# MX Master 3S remappable CIDs observed on spike (Bolt).
+CID_BACK = 0x53
+CID_FORWARD = 0x56
+CID_GESTURE = 0xC3
+CID_MODE = 0xC4
+
+
+def _must_root() -> None:
+    if os.geteuid() != 0:
+        _fail("helper must run as root (use pkexec)", code=77)
+
+
+def _ok(payload: dict[str, Any]) -> int:
+    payload = {"ok": True, **payload}
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return 0
+
+
+def _fail(message: str, *, code: int = 1, **extra: Any) -> int:
+    payload = {"ok": False, "error": message, **extra}
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    return code
+
+
+def _busctl(args: list[str], *, timeout: float = 20.0) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["busctl", "--system", *args],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+
+
+def _parse_busctl_variant(text: str) -> Any:
+    """Parse a single busctl stdout line into a Python value (best-effort)."""
+    text = text.strip()
+    if not text:
+        return None
+    # Examples: 's "MX Master 3S"', 'q 1200', 'b true', 'aqqb 2 200 8000 50 true'
+    m = re.match(r'^([a-zA-Z0-9\{\}]+)(?:\s+(.*))?$', text, re.DOTALL)
+    if not m:
+        return text
+    sig, rest = m.group(1), (m.group(2) or "").strip()
+    if sig == "s":
+        # quoted string
+        qm = re.match(r'^"(.*)"$', rest)
+        return qm.group(1) if qm else rest
+    if sig == "q" or sig == "u" or sig == "i" or sig == "n" or sig == "t" or sig == "x":
+        return int(rest.split()[0])
+    if sig == "y":
+        return int(rest.split()[0])
+    if sig == "b":
+        return rest.split()[0] == "true"
+    if sig.startswith("a"):
+        # array: drop count if present for a{…} / aq etc.
+        parts = rest.split()
+        if not parts:
+            return []
+        # busctl prints: <n> <elems…> for fixed arrays sometimes
+        try:
+            n = int(parts[0])
+            vals = parts[1:]
+            if len(vals) >= n and sig in {"aq", "au", "ay", "as"}:
+                if sig == "as":
+                    # strings are quoted; fall through to raw
+                    return rest
+                return [int(v) if v.isdigit() else v for v in vals[:n]]
+        except ValueError:
+            pass
+        return rest
+    return text
+
+
+def _get_property(path: str, iface: str, prop: str) -> Any:
+    r = _busctl(["get-property", SERVICE, path, iface, prop])
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or r.stdout.strip() or f"get-property {prop}")
+    return _parse_busctl_variant(r.stdout)
+
+
+def _call(path: str, iface: str, method: str, *args: str, timeout: float = 20.0) -> str:
+    r = _busctl(["call", SERVICE, path, iface, method, *args], timeout=timeout)
+    if r.returncode != 0:
+        err = r.stderr.strip() or r.stdout.strip() or f"call {method} failed"
+        raise RuntimeError(err)
+    return r.stdout.strip()
+
+
+def _device_paths() -> list[str]:
+    r = _busctl(["tree", SERVICE])
+    if r.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in r.stdout.splitlines():
+        for token in line.split():
+            if re.fullmatch(r"/pizza/pixl/logiops/devices/\d+", token):
+                paths.append(token)
+    return sorted(set(paths))
+
+
+def _device_index_path(index: int) -> str:
+    return f"{ROOT}/devices/{index}"
+
+
+def cmd_status(_args: argparse.Namespace) -> int:
+    logid_active = (
+        subprocess.run(
+            ["systemctl", "is-active", "logid"],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        == "active"
+    )
+    paths = _device_paths()
+    devices: list[dict[str, Any]] = []
+    quirk = None
+    for path in paths:
+        info: dict[str, Any] = {"path": path}
+        try:
+            info["name"] = _get_property(path, IFACE_DEVICE, "Name")
+            info["product_id"] = _get_property(path, IFACE_DEVICE, "ProductID")
+            info["active"] = _get_property(path, IFACE_DEVICE, "Active")
+        except RuntimeError as exc:
+            info["error"] = str(exc)
+        try:
+            dpi_out = _call(path, IFACE_DPI, "GetDPI", "y", "0", timeout=8.0)
+            info["dpi"] = _parse_busctl_variant(dpi_out)
+        except Exception as exc:  # noqa: BLE001
+            info["dpi"] = None
+            info["dpi_error"] = str(exc)
+            quirk = (
+                "Bolt: устройство видно, но GetDPI таймаутит — пошевелите мышь "
+                "или дождитесь HID++ (иногда нужен soft USB reset ресивера)."
+            )
+        info.update(_read_smartshift(path))
+        devices.append(info)
+
+    if logid_active and not paths:
+        quirk = (
+            "Bolt: logid запущен, но MX Master ещё не в дереве D-Bus. "
+            "Пошевелите мышь (Easy-Switch на канале Bolt). После restart "
+            "устройство часто появляется только после движения."
+        )
+
+    return _ok(
+        {
+            "logid_active": logid_active,
+            "service": SERVICE,
+            "device_count": len(paths),
+            "devices": devices,
+            "quirk": quirk,
+            "transport_hint": "bolt-first",
+        }
+    )
+
+
+def _parse_yyy(text: str) -> list[int]:
+    """Parse busctl ``yyy a b c`` (or bare ints) into three ints."""
+    parts = text.strip().split()
+    if parts and parts[0] == "yyy":
+        parts = parts[1:]
+    vals = [int(x) for x in parts[:3]]
+    while len(vals) < 3:
+        vals.append(0)
+    return vals
+
+
+def _read_smartshift(path: str) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    try:
+        torque_support = _get_property(path, IFACE_SMARTSHIFT, "TorqueSupport")
+        out["smartshift_torque_support"] = bool(torque_support)
+    except Exception as exc:  # noqa: BLE001
+        out["smartshift_torque_support"] = False
+        out["smartshift_error"] = str(exc)
+        return out
+    try:
+        raw = _call(path, IFACE_SMARTSHIFT, "GetConfig", timeout=8.0)
+        mode, threshold, torque = _parse_yyy(raw)
+        # logiops SmartShift::IPC::getConfig (v0.3.x): first byte is CONFIG
+        # tri-state for optional `on`, NOT raw HID++ ratchet:
+        #   0 = on unset (cleared), 1 = on:false, 2 = on:true
+        # See PixlOne/logiops src/logid/features/SmartShift.cpp getConfig().
+        if mode == 2:
+            on: bool | None = True
+            on_state = "on"
+        elif mode == 1:
+            on = False
+            on_state = "off"
+        else:
+            on = None
+            on_state = "unset"
+        out["smartshift"] = {
+            "mode": mode,
+            "on": on,
+            "on_state": on_state,
+            "threshold": threshold,
+            "torque": torque,
+            "raw": raw,
+        }
+    except Exception as exc:  # noqa: BLE001
+        out["smartshift"] = None
+        out["smartshift_error"] = str(exc)
+    return out
+
+
+def cmd_list_devices(args: argparse.Namespace) -> int:
+    return cmd_status(args)
+
+
+def cmd_get_smartshift(args: argparse.Namespace) -> int:
+    path = _device_index_path(args.device)
+    try:
+        data = {"path": path, **_read_smartshift(path)}
+        if data.get("smartshift") is None and data.get("smartshift_error"):
+            return _fail(str(data["smartshift_error"]), path=path)
+        return _ok(data)
+    except Exception as exc:  # noqa: BLE001
+        return _fail(str(exc), path=path)
+
+
+def cmd_set_smartshift(args: argparse.Namespace) -> int:
+    """Live SmartShift via D-Bus. Prefer apply-cfg to persist across restart.
+
+    ``SetActive(active, clear)``: second arg clear=true *unsets* config ``on``
+    (GetConfig → 0). Always pass clear=false when enabling/disabling.
+
+    GetConfig mode: 0=unset, 1=off, 2=on. Bolt Set* often times out; readback
+    is authoritative.
+    """
+    path = _device_index_path(args.device)
+    errors: list[str] = []
+
+    def _try_call(label: str, *call_args: str) -> None:
+        try:
+            _call(path, IFACE_SMARTSHIFT, *call_args, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {exc}")
+
+    if args.on is not None:
+        # NEVER pass clear=true here — that yields mode 0 (unset), not off.
+        active = "true" if args.on == "true" else "false"
+        _try_call("SetActive", "SetActive", "bb", active, "false")
+    if args.threshold is not None:
+        thr = int(args.threshold)
+        if thr < 1 or thr > 50:
+            return _fail("threshold out of range (1–50)")
+        _try_call("SetThreshold", "SetThreshold", "yb", str(thr), "false")
+    if args.torque is not None:
+        support = _get_property(path, IFACE_SMARTSHIFT, "TorqueSupport")
+        if not support:
+            return _fail(
+                "TorqueSupport=false on this device (MX Master 3S) — "
+                "torque not applied; omit torque or use cfg only for docs"
+            )
+        _try_call("SetTorque", "SetTorque", "yb", str(int(args.torque)), "false")
+
+    data = {"path": path, **_read_smartshift(path)}
+    ss = data.get("smartshift") or {}
+    matched = True
+    if args.threshold is not None and int(ss.get("threshold", -1)) != int(args.threshold):
+        matched = False
+    if args.on is not None:
+        want_on = args.on == "true"
+        # mode 2 = on, mode 1 = off (explicit). mode 0 = unset ≠ either.
+        got_mode = int(ss.get("mode", -1))
+        if want_on and got_mode != 2:
+            matched = False
+        if (not want_on) and got_mode != 1:
+            matched = False
+    if matched and ss:
+        if errors:
+            data["dbus_warnings"] = errors
+        return _ok(data)
+    return _fail(
+        "; ".join(errors) or "smartshift set failed",
+        path=path,
+        **{k: v for k, v in data.items() if k != "path"},
+    )
+
+
+def _wake_bolt_receiver() -> bool:
+    """Soft-reset Logi Bolt USB (046d:c548) to encourage device re-detect."""
+    import glob
+
+    for vendor in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+        try:
+            if Path(vendor).read_text().strip() != "046d":
+                continue
+            product = Path(vendor).with_name("idProduct")
+            if product.read_text().strip() != "c548":
+                continue
+            auth = Path(vendor).with_name("authorized")
+            if not auth.exists():
+                continue
+            auth.write_text("0")
+            time.sleep(1.0)
+            auth.write_text("1")
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def cmd_get_dpi(args: argparse.Namespace) -> int:
+    path = _device_index_path(args.device)
+    try:
+        out = _call(path, IFACE_DPI, "GetDPI", "y", str(args.sensor), timeout=10.0)
+        dpi = _parse_busctl_variant(out)
+        return _ok({"path": path, "sensor": args.sensor, "dpi": dpi})
+    except Exception as exc:  # noqa: BLE001
+        return _fail(
+            str(exc),
+            path=path,
+            hint="Move the mouse (Bolt re-detect / HID++ wake), then retry.",
+        )
+
+
+def cmd_set_dpi(args: argparse.Namespace) -> int:
+    path = _device_index_path(args.device)
+    dpi = int(args.dpi)
+    if dpi < 200 or dpi > 8000:
+        return _fail("dpi out of MX Master 3S range (200–8000)")
+    try:
+        _call(path, IFACE_DPI, "SetDPI", "qy", str(dpi), str(args.sensor), timeout=10.0)
+        # read-back
+        try:
+            out = _call(path, IFACE_DPI, "GetDPI", "y", str(args.sensor), timeout=10.0)
+            got = _parse_busctl_variant(out)
+        except Exception:  # noqa: BLE001
+            got = None
+        return _ok({"path": path, "sensor": args.sensor, "dpi": dpi, "readback": got})
+    except Exception as exc:  # noqa: BLE001
+        return _fail(str(exc), path=path)
+
+
+def _keypress_action_libconfig(keys: list[str]) -> str:
+    quoted = ", ".join(f'"{k}"' for k in keys)
+    return '{ type: "Keypress"; keys: [%s]; }' % quoted
+
+
+def cmd_set_button_action(args: argparse.Namespace) -> int:
+    """Live remap via Button.SetAction (string is libconfig action snippet)."""
+    path = _device_index_path(args.device)
+    # Find button object by ControlID
+    buttons_root = f"{path}/buttons"
+    r = _busctl(["call", SERVICE, path, IFACE_BUTTONS, "Enumerate"])
+    if r.returncode != 0:
+        # fall back to tree walk
+        tree = _busctl(["tree", SERVICE])
+        button_paths = [
+            t
+            for line in tree.stdout.splitlines()
+            for t in line.split()
+            if t.startswith(buttons_root + "/")
+        ]
+    else:
+        # ao → paths
+        button_paths = re.findall(r"/pizza/pixl/logiops/devices/\d+/buttons/\d+", r.stdout)
+
+    target = None
+    cid = int(args.cid, 0)
+    for bp in sorted(set(button_paths)):
+        try:
+            control = _get_property(bp, IFACE_BUTTON, "ControlID")
+        except RuntimeError:
+            continue
+        if int(control) == cid:
+            target = bp
+            break
+    if not target:
+        return _fail(f"button cid {hex(cid)} not found under {path}")
+
+    if args.preset == "back":
+        action = _keypress_action_libconfig(["KEY_BACK"])
+    elif args.preset == "forward":
+        action = _keypress_action_libconfig(["KEY_FORWARD"])
+    elif args.preset == "none":
+        action = '{ type: "None"; }'
+    elif args.action:
+        action = args.action
+    else:
+        return _fail("provide --preset or --action")
+
+    try:
+        _call(target, IFACE_BUTTON, "SetAction", "s", action, timeout=10.0)
+        return _ok({"button": target, "cid": cid, "action": action})
+    except Exception as exc:  # noqa: BLE001
+        # Live SetAction string format is still unreliable on 0.3.5; MVP GUI
+        # persists remaps via apply-cfg (write /etc/logid.cfg + restart).
+        return _fail(
+            str(exc),
+            button=target,
+            cid=cid,
+            hint="Use apply-cfg for persistent remap on logiops 0.3.5",
+        )
+
+
+def cmd_apply_cfg(args: argparse.Namespace) -> int:
+    """Write /etc/logid.cfg from file or stdin, backup, restart logid, wait."""
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    else:
+        text = sys.stdin.read()
+    if "devices:" not in text:
+        return _fail("cfg text must contain devices: (…)")
+
+    cfg = Path(args.dest)
+    if cfg.exists():
+        bak = cfg.with_name(cfg.name + ".bak.mxmaster")
+        bak.write_text(cfg.read_text(encoding="utf-8"), encoding="utf-8")
+        backup = str(bak)
+    else:
+        backup = None
+
+    cfg.write_text(text, encoding="utf-8")
+    r = subprocess.run(
+        ["systemctl", "restart", "logid"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if r.returncode != 0:
+        return _fail(
+            "systemctl restart logid failed: " + (r.stderr.strip() or r.stdout.strip()),
+            wrote=str(cfg),
+            backup=backup,
+        )
+
+    # Wait briefly for device node (Bolt often needs mouse move / USB wake).
+    found: list[str] = []
+    for _ in range(15):
+        time.sleep(0.4)
+        found = _device_paths()
+        if found:
+            break
+
+    woke = False
+    if not found and not args.no_wake:
+        woke = _wake_bolt_receiver()
+        for _ in range(20):
+            time.sleep(0.5)
+            found = _device_paths()
+            if found:
+                break
+
+    quirk = None
+    if not found:
+        quirk = (
+            "Cfg applied and logid restarted, but no device yet. "
+            "Move the MX Master 3S (Bolt) and Refresh in the GUI."
+        )
+
+    return _ok(
+        {
+            "wrote": str(cfg),
+            "backup": backup,
+            "restarted": True,
+            "bolt_usb_wake": woke,
+            "devices": found,
+            "quirk": quirk,
+        }
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="mxmaster-cfg-helper")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("status", help="logid + devices + Bolt quirk hint")
+    sub.add_parser("list-devices", help="alias of status")
+
+    g = sub.add_parser("get-dpi")
+    g.add_argument("--device", type=int, default=0)
+    g.add_argument("--sensor", type=int, default=0)
+
+    s = sub.add_parser("set-dpi")
+    s.add_argument("--device", type=int, default=0)
+    s.add_argument("--sensor", type=int, default=0)
+    s.add_argument("--dpi", type=int, required=True)
+
+    b = sub.add_parser("set-button-action", help="live Button.SetAction")
+    b.add_argument("--device", type=int, default=0)
+    b.add_argument("--cid", required=True, help="e.g. 0x56 or 86")
+    b.add_argument(
+        "--preset",
+        choices=["back", "forward", "none"],
+        help="common Keypress presets",
+    )
+    b.add_argument("--action", help="raw libconfig action string")
+
+    gs = sub.add_parser("get-smartshift")
+    gs.add_argument("--device", type=int, default=0)
+
+    ss = sub.add_parser("set-smartshift", help="live SmartShift (prefer apply-cfg)")
+    ss.add_argument("--device", type=int, default=0)
+    ss.add_argument("--on", choices=["true", "false"], default=None)
+    ss.add_argument("--threshold", type=int, default=None)
+    ss.add_argument("--torque", type=int, default=None)
+
+    a = sub.add_parser("apply-cfg", help="write logid.cfg + restart logid")
+    a.add_argument("--file", help="path to cfg text (else stdin)")
+    a.add_argument("--dest", default=str(DEFAULT_CFG))
+    a.add_argument(
+        "--no-wake",
+        action="store_true",
+        help="do not soft-reset Bolt USB if device missing after restart",
+    )
+
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    _must_root()
+    if shutil.which("busctl") is None:
+        return _fail("busctl not found")
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    dispatch = {
+        "status": cmd_status,
+        "list-devices": cmd_list_devices,
+        "get-dpi": cmd_get_dpi,
+        "set-dpi": cmd_set_dpi,
+        "set-button-action": cmd_set_button_action,
+        "get-smartshift": cmd_get_smartshift,
+        "set-smartshift": cmd_set_smartshift,
+        "apply-cfg": cmd_apply_cfg,
+    }
+    return dispatch[args.cmd](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

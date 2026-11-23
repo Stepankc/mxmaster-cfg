@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<policyconfig>
+  <vendor>MX Master Linux configurator (name TBD)</vendor>
+  <vendor_url>https://example.invalid/mxmaster-cfg</vendor_url>
+
+  <action id="org.mxmaster.cfg.helper">
+    <description gettext-domain="mxmaster-cfg">
+      Configure Logitech MX Master via logid
+    </description>
+    <description xml:lang="ru">
+      Настройка Logitech MX Master через logid
+    </description>
+    <message gettext-domain="mxmaster-cfg">
+      Authentication is required to talk to logid (system D-Bus is root-only)
+      and to update /etc/logid.cfg.
+    </message>
+    <message xml:lang="ru">
+      Нужна аутентификация: D-Bus logid доступен только root, а также для
+      записи /etc/logid.cfg.
+    </message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <!-- keep credentials briefly so Apply / Refresh don't re-prompt every click -->
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/libexec/mxmaster-cfg-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>
