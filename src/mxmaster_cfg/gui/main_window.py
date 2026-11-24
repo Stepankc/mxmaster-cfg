@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -28,7 +28,13 @@ from PySide6.QtWidgets import (
 
 from mxmaster_cfg.adapter.logiops_cfg import CfgWriter
 from mxmaster_cfg.adapter.logiops_dbus import CID_BACK, CID_FORWARD, CID_GESTURE
-from mxmaster_cfg.adapter.privileged import PrivilegedHelperError, apply_cfg_text, status
+from mxmaster_cfg.adapter.privileged import (
+    PrivilegedHelperError,
+    apply_cfg_text,
+    get_battery,
+    status,
+    wake_receiver,
+)
 from mxmaster_cfg.profiles import (
     ProfileError,
     delete_named_profile,
@@ -37,6 +43,28 @@ from mxmaster_cfg.profiles import (
     profiles_dir,
     save_named_profile,
 )
+
+# Battery auto-refresh interval (non-blocking; coexist-only HID++ probe).
+BATTERY_REFRESH_MS = 45_000
+# After apply-cfg with device_count=0, poll until Bolt reappears.
+RECONNECT_POLL_MS = 2_000
+RECONNECT_MAX_POLLS = 30  # ~60 s
+
+
+class _FnWorker(QObject):
+    """Run a callable off the GUI thread; emit result or exception."""
+
+    finished = Signal(object)
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        super().__init__()
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(("ok", self._fn()))
+        except BaseException as exc:  # noqa: BLE001 — marshal to GUI
+            self.finished.emit(("err", exc))
 
 # Remap presets for forward/back.
 REMAP_CHOICES: list[tuple[str, int, str]] = [
@@ -243,9 +271,14 @@ def _match_remap_preset(profile: dict[str, Any]) -> int | None:
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MX Master Config (Linux)")
+        self.setWindowTitle("MX Master Config")
         self.resize(720, 800)
         self._last_status: dict[str, Any] = {}
+        self._async_busy = False
+        self._async_thread: QThread | None = None
+        self._async_worker: _FnWorker | None = None
+        self._reconnect_left = 0
+        self._reconnect_active = False
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -254,7 +287,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(root)
         layout = QVBoxLayout(root)
 
-        title = QLabel("MX Master Config (Linux)")
+        title = QLabel("MX Master Config")
         font = title.font()
         font.setPointSize(16)
         font.setBold(True)
@@ -263,8 +296,8 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(
             QLabel(
-                "DPI · SmartShift · HiRes · ThumbWheel · батарея · remap · "
-                "жесты → polkit-helper → logid 0.3.5 (Bolt)."
+                "mxmaster-cfg · DPI · SmartShift · HiRes · ThumbWheel · "
+                "батарея · remap · жесты → polkit-helper → logid 0.3.5 (Bolt)."
             )
         )
 
@@ -491,6 +524,14 @@ class MainWindow(QMainWindow):
         self.btn_apply.clicked.connect(self._on_apply)
         buttons.addWidget(self.btn_apply)
 
+        self.btn_wake = QPushButton("Разбудить ресивер")
+        self.btn_wake.setToolTip(
+            "Soft USB wake Logi Bolt (046d:c548) и опрос, пока устройство "
+            "не появится в logid. Полезно после Apply при device_count=0."
+        )
+        self.btn_wake.clicked.connect(self._on_wake_receiver)
+        buttons.addWidget(self.btn_wake)
+
         self.btn_conflict = QPushButton("Конфликт HID++")
         self.btn_conflict.clicked.connect(self._on_check_conflict)
         buttons.addWidget(self.btn_conflict)
@@ -499,9 +540,9 @@ class MainWindow(QMainWindow):
 
         hint = QLabel(
             "Применить пишет /etc/logid.cfg через pkexec и делает "
-            "systemctl restart logid (при отсутствии device — soft USB wake Bolt). "
-            "Профили — именованные YAML/JSON на диске (не app-specific). "
-            "Пароль polkit спросит у Stepan."
+            "systemctl restart logid (при отсутствии device — soft USB wake "
+            "Bolt + опрос). Батарея обновляется ~каждые 45 с без блокировки UI. "
+            "Профили — именованные YAML/JSON на диске (не app-specific)."
         )
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -510,6 +551,15 @@ class MainWindow(QMainWindow):
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Готово — нажмите «Обновить» (pkexec)")
         self._refresh_profile_list()
+
+        self._battery_timer = QTimer(self)
+        self._battery_timer.setInterval(BATTERY_REFRESH_MS)
+        self._battery_timer.timeout.connect(self._on_battery_tick)
+        self._battery_timer.start()
+
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setInterval(RECONNECT_POLL_MS)
+        self._reconnect_timer.timeout.connect(self._on_reconnect_tick)
 
     def _build_profile(self) -> dict[str, Any]:
         label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]
@@ -611,20 +661,70 @@ class MainWindow(QMainWindow):
             tw["tap"] = action
         return tw
 
+    def _run_async(
+        self,
+        fn: Callable[[], Any],
+        on_ok: Callable[[Any], None],
+        *,
+        on_err: Callable[[BaseException], None] | None = None,
+        busy_message: str | None = None,
+    ) -> bool:
+        """Run ``fn`` in a worker thread; deliver result on the GUI thread."""
+        if self._async_busy:
+            return False
+        self._async_busy = True
+        if busy_message:
+            self.statusBar().showMessage(busy_message)
+
+        thread = QThread(self)
+        worker = _FnWorker(fn)
+        worker.moveToThread(thread)
+
+        def _finish(payload: object) -> None:
+            self._async_busy = False
+            thread.quit()
+            kind, value = payload  # type: ignore[misc]
+            if kind == "ok":
+                on_ok(value)
+            elif on_err is not None:
+                on_err(value)
+            else:
+                self.statusBar().showMessage("Ошибка: %s" % value)
+            worker.deleteLater()
+            thread.deleteLater()
+            self._async_thread = None
+            self._async_worker = None
+
+        worker.finished.connect(_finish)
+        thread.started.connect(worker.run)
+        self._async_thread = thread
+        self._async_worker = worker
+        thread.start()
+        return True
+
     def _on_refresh(self) -> None:
-        try:
-            data = status()
-        except PrivilegedHelperError as exc:
-            self.lbl_quirk.setText(str(exc))
-            self.statusBar().showMessage("Ошибка helper/pkexec")
+        if not self._run_async(
+            status,
+            self._apply_status_data,
+            on_err=self._on_refresh_error,
+            busy_message="Обновление… (pkexec)",
+        ):
+            self.statusBar().showMessage("Уже выполняется запрос к helper…")
+
+    def _on_refresh_error(self, exc: BaseException) -> None:
+        self.lbl_quirk.setText(str(exc))
+        self.statusBar().showMessage("Ошибка helper/pkexec")
+        if isinstance(exc, PrivilegedHelperError):
             QMessageBox.warning(
                 self,
                 "Helper",
                 f"{exc}\n\nУстановите helper:\n"
                 "  scripts/install-helper.sh",
             )
-            return
 
+    def _apply_status_data(
+        self, data: dict[str, Any], *, clear_reconnect: bool = True
+    ) -> None:
         self._last_status = data
         devices = data.get("devices") or []
         if not devices:
@@ -635,10 +735,14 @@ class MainWindow(QMainWindow):
             quirk = data.get("quirk") or "Устройство не найдено."
             self.lbl_quirk.setText(str(quirk))
             self.statusBar().showMessage(
-                "logid active=%s, devices=0 — пошевелите мышь (Bolt)"
+                "logid active=%s, devices=0 — пошевелите мышь или "
+                "«Разбудить ресивер» (Bolt)"
                 % data.get("logid_active")
             )
             return
+
+        if clear_reconnect:
+            self._stop_reconnect(clear_message=False)
 
         dev = devices[0]
         self.lbl_name.setText(str(dev.get("name") or "?"))
@@ -657,7 +761,9 @@ class MainWindow(QMainWindow):
         torque_support = bool(dev.get("smartshift_torque_support"))
         self.spin_ss_torque.setEnabled(torque_support)
         if torque_support:
-            self.lbl_ss_torque_hint.setText("Torque поддерживается — значение уйдёт в cfg.")
+            self.lbl_ss_torque_hint.setText(
+                "Torque поддерживается — значение уйдёт в cfg."
+            )
         else:
             self.lbl_ss_torque_hint.setText(
                 "TorqueSupport=false на этом устройстве — torque в cfg не пишем."
@@ -777,33 +883,189 @@ class MainWindow(QMainWindow):
     def _on_apply(self) -> None:
         profile = self._build_profile()
         cfg_text = CfgWriter(profile).render()
-        try:
-            result = apply_cfg_text(cfg_text)
-        except PrivilegedHelperError as exc:
+
+        def _do_apply() -> dict[str, Any]:
+            return apply_cfg_text(cfg_text)
+
+        def _ok(result: dict[str, Any]) -> None:
+            self._handle_apply_result(profile, result, title="Применить")
+
+        def _err(exc: BaseException) -> None:
             QMessageBox.warning(self, "Применить", str(exc))
             self.statusBar().showMessage("Apply failed")
-            return
 
+        if not self._run_async(
+            _do_apply,
+            _ok,
+            on_err=_err,
+            busy_message="Применение cfg… (pkexec)",
+        ):
+            self.statusBar().showMessage("Уже выполняется запрос к helper…")
+
+    def _handle_apply_result(
+        self,
+        profile: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        title: str,
+        profile_name: str | None = None,
+    ) -> None:
         quirk = result.get("quirk")
-        ss = profile["smartshift"]
-        hr = profile["hiresscroll"]
+        devices = result.get("devices") or []
+        ss = profile.get("smartshift") or {}
+        hr = profile.get("hiresscroll") or {}
         tw = profile.get("thumbwheel") or {}
-        msg = (
-            f"Записано {result.get('wrote')}\n"
-            f"DPI: {profile['dpi']}\n"
-            f"SmartShift: on={ss.get('on')} threshold={ss.get('threshold')}\n"
-            f"HiRes: hires={hr.get('hires')} invert={hr.get('invert')} "
-            f"target={hr.get('target')}\n"
-            f"ThumbWheel: divert={tw.get('divert')} invert={tw.get('invert')}\n"
-            f"Жесты: CID 0xc3 ({len(profile['buttons'][0]['action']['gestures'])} направлений)\n"
-            f"devices: {result.get('devices') or []}\n"
-            f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
-        )
+        gestures = []
+        buttons = profile.get("buttons") or []
+        if buttons:
+            action = (buttons[0] or {}).get("action") or {}
+            gestures = action.get("gestures") or []
+        if profile_name:
+            msg = (
+                f"Профиль «{profile_name}» применён.\n"
+                f"Записано {result.get('wrote')}\n"
+                f"devices: {devices}\n"
+                f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
+            )
+        else:
+            msg = (
+                f"Записано {result.get('wrote')}\n"
+                f"DPI: {profile.get('dpi')}\n"
+                f"SmartShift: on={ss.get('on')} threshold={ss.get('threshold')}\n"
+                f"HiRes: hires={hr.get('hires')} invert={hr.get('invert')} "
+                f"target={hr.get('target')}\n"
+                f"ThumbWheel: divert={tw.get('divert')} invert={tw.get('invert')}\n"
+                f"Жесты: CID 0xc3 ({len(gestures)} направлений)\n"
+                f"devices: {devices}\n"
+                f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
+            )
         if quirk:
             msg += f"\n\n⚠ {quirk}"
-        QMessageBox.information(self, "Применить", msg)
-        self.statusBar().showMessage("Apply OK — обновляю статус…")
-        self._on_refresh()
+        QMessageBox.information(self, title, msg)
+
+        if devices:
+            self._stop_reconnect(clear_message=False)
+            self.statusBar().showMessage("Apply OK — обновляю статус…")
+            self._on_refresh()
+        else:
+            self.statusBar().showMessage(
+                "Apply OK, devices=0 — опрос Bolt / soft wake…"
+            )
+            self._start_reconnect()
+
+    def _start_reconnect(self) -> None:
+        self._reconnect_active = True
+        self._reconnect_left = RECONNECT_MAX_POLLS
+        if not self._reconnect_timer.isActive():
+            self._reconnect_timer.start()
+        # Immediate first poll (also covers wake already done by apply-cfg).
+        self._on_reconnect_tick()
+
+    def _stop_reconnect(self, *, clear_message: bool) -> None:
+        was = self._reconnect_active
+        self._reconnect_active = False
+        self._reconnect_left = 0
+        self._reconnect_timer.stop()
+        if was and clear_message:
+            self.statusBar().clearMessage()
+
+    def _on_reconnect_tick(self) -> None:
+        if not self._reconnect_active:
+            self._reconnect_timer.stop()
+            return
+        if self._async_busy:
+            return
+        if self._reconnect_left <= 0:
+            self._stop_reconnect(clear_message=False)
+            self.statusBar().showMessage(
+                "Устройство не появилось — пошевелите мышь или "
+                "«Разбудить ресивер»"
+            )
+            return
+        self._reconnect_left -= 1
+        left = self._reconnect_left
+
+        def _ok(data: dict[str, Any]) -> None:
+            if not self._reconnect_active:
+                return
+            devices = data.get("devices") or []
+            if devices:
+                self._stop_reconnect(clear_message=True)
+                self._apply_status_data(data, clear_reconnect=False)
+                self.statusBar().showMessage(
+                    "Устройство снова на связи · devices=%s"
+                    % data.get("device_count")
+                )
+                return
+            self.statusBar().showMessage(
+                "Ожидание Bolt… ещё ~%s с (пошевелите мышь)"
+                % max(1, left * RECONNECT_POLL_MS // 1000)
+            )
+
+        def _err(exc: BaseException) -> None:
+            if self._reconnect_active:
+                self.statusBar().showMessage(
+                    "Опрос: %s (повтор…)" % exc
+                )
+
+        self._run_async(status, _ok, on_err=_err)
+
+    def _on_battery_tick(self) -> None:
+        if self._async_busy or self._reconnect_active:
+            return
+        devices = (self._last_status or {}).get("devices") or []
+        if not devices:
+            return
+
+        def _ok(data: dict[str, Any]) -> None:
+            # Lightweight: only refresh battery row.
+            self._apply_battery_label(
+                {
+                    "battery": data.get("battery"),
+                    "battery_available": data.get("battery_available"),
+                    "battery_error": data.get("battery_error"),
+                }
+            )
+
+        def _err(_exc: BaseException) -> None:
+            # Silent on timer — avoid dialog spam.
+            return
+
+        self._run_async(
+            lambda: get_battery(allow_stop_logid=False),
+            _ok,
+            on_err=_err,
+        )
+
+    def _on_wake_receiver(self) -> None:
+        def _ok(data: dict[str, Any]) -> None:
+            devices = data.get("devices") or []
+            if devices:
+                self._stop_reconnect(clear_message=True)
+                self.statusBar().showMessage(
+                    "Ресивер разбужен · devices=%s — обновляю…"
+                    % data.get("device_count")
+                )
+                self._on_refresh()
+            else:
+                quirk = data.get("quirk") or "devices=0"
+                self.lbl_quirk.setText(str(quirk))
+                self.statusBar().showMessage(
+                    "Wake OK, devices=0 — опрос…"
+                )
+                self._start_reconnect()
+
+        def _err(exc: BaseException) -> None:
+            QMessageBox.warning(self, "Разбудить ресивер", str(exc))
+            self.statusBar().showMessage("Wake failed")
+
+        if not self._run_async(
+            wake_receiver,
+            _ok,
+            on_err=_err,
+            busy_message="Soft USB wake Bolt… (pkexec)",
+        ):
+            self.statusBar().showMessage("Уже выполняется запрос к helper…")
 
     def _selected_profile_name(self) -> str | None:
         item = self.list_profiles.currentItem()
@@ -877,21 +1139,29 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Профиль", str(exc))
             return
         cfg_text = CfgWriter(profile).render()
-        try:
-            result = apply_cfg_text(cfg_text)
-        except PrivilegedHelperError as exc:
+
+        def _do_apply() -> dict[str, Any]:
+            return apply_cfg_text(cfg_text)
+
+        def _ok(result: dict[str, Any]) -> None:
+            self._handle_apply_result(
+                profile,
+                result,
+                title="На устройство",
+                profile_name=name,
+            )
+
+        def _err(exc: BaseException) -> None:
             QMessageBox.warning(self, "На устройство", str(exc))
             self.statusBar().showMessage("Profile apply failed")
-            return
-        QMessageBox.information(
-            self,
-            "На устройство",
-            f"Профиль «{name}» применён.\n"
-            f"Записано {result.get('wrote')}\n"
-            f"devices: {result.get('devices') or []}",
-        )
-        self.statusBar().showMessage(f"Профиль «{name}» → устройство OK")
-        self._on_refresh()
+
+        if not self._run_async(
+            _do_apply,
+            _ok,
+            on_err=_err,
+            busy_message=f"Профиль «{name}» → устройство…",
+        ):
+            self.statusBar().showMessage("Уже выполняется запрос к helper…")
 
     def _on_profile_delete(self) -> None:
         name = self._selected_profile_name()
