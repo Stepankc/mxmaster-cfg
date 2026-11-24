@@ -3,7 +3,8 @@
 [English](README.md) · [Русский](README.ru.md)
 
 Linux GUI для мышей **Logitech MX Master** через **[logiops](https://github.com/PixlOne/logiops)** (`logid`):
-DPI, SmartShift, hi-res scroll, remap кнопок и жесты (CID `0xc3`).
+DPI, SmartShift, hi-res scroll, thumb wheel, батарея (если logiops отдаёт),
+remap кнопок и жесты (CID `0xc3`).
 
 | | |
 |---|---|
@@ -24,6 +25,9 @@ DPI, SmartShift, hi-res scroll, remap кнопок и жесты (CID `0xc3`).
 - **DPI** чтение/запись (live D-Bus + persist через cfg)
 - **SmartShift** on/off + threshold (корректный **tri-state** `GetConfig` в logiops)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
+- **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты left/right/tap
+- **Батарея** (Unified Battery `0x1004`), если logiops отдаёт по D-Bus
+  (на пакете 0.3.5 — н/д, GUI показывает причину)
 - **Remap** Forward/Back и пресеты **жестов** (persist через `/etc/logid.cfg` + restart `logid`)
 - Подсказка Bolt-quirk («пошевелите мышь»), если после restart устройств нет
 - Проверка конфликта HID++ (Solaar / OpenLogi / ratbagd)
@@ -60,6 +64,8 @@ pkexec /usr/local/libexec/mxmaster-cfg-helper get-dpi
 pkexec /usr/local/libexec/mxmaster-cfg-helper set-dpi --dpi 1200
 pkexec /usr/local/libexec/mxmaster-cfg-helper get-smartshift
 pkexec /usr/local/libexec/mxmaster-cfg-helper get-hiresscroll
+pkexec /usr/local/libexec/mxmaster-cfg-helper get-thumbwheel
+pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery
 ```
 
 **Применить** в GUI пишет `/etc/logid.cfg` (бэкап `*.bak.mxmaster`) и
@@ -87,6 +93,8 @@ pkexec /usr/local/libexec/mxmaster-cfg-helper get-hiresscroll
 | Запуск | [docs/run.md](docs/run.md) | [docs/run.ru.md](docs/run.ru.md) |
 | SmartShift | [docs/smartshift.md](docs/smartshift.md) | [docs/smartshift.ru.md](docs/smartshift.ru.md) |
 | Hi-res scroll | [docs/hires-scroll.md](docs/hires-scroll.md) | [docs/hires-scroll.ru.md](docs/hires-scroll.ru.md) |
+| Thumb wheel | [docs/thumbwheel.md](docs/thumbwheel.md) | [docs/thumbwheel.ru.md](docs/thumbwheel.ru.md) |
+| Батарея | [docs/battery.md](docs/battery.md) | [docs/battery.ru.md](docs/battery.ru.md) |
 | Жесты | [docs/gestures.md](docs/gestures.md) | [docs/gestures.ru.md](docs/gestures.ru.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) | [CONTRIBUTING.ru.md](CONTRIBUTING.ru.md) |
 

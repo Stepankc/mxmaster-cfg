@@ -20,6 +20,10 @@
     "invert": false,
     "target": false
   },
+  "thumbwheel": {
+    "divert": false,
+    "invert": false
+  },
   "buttons": [
     {
       "cid": "0xc3",

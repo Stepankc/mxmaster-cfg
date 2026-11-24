@@ -3,7 +3,8 @@
 [English](README.md) · [Русский](README.ru.md)
 
 Linux GUI for **Logitech MX Master** mice via **[logiops](https://github.com/PixlOne/logiops)** (`logid`):
-DPI, SmartShift, hi-res scroll, button remap, and gesture button (CID `0xc3`).
+DPI, SmartShift, hi-res scroll, thumb wheel, battery status (when exposed),
+button remap, and gesture button (CID `0xc3`).
 
 | | |
 |---|---|
@@ -24,6 +25,9 @@ DPI, SmartShift, hi-res scroll, button remap, and gesture button (CID `0xc3`).
 - **DPI** get/set (live D-Bus + persist through cfg)
 - **SmartShift** on/off + threshold (correct logiops **tri-state** `GetConfig`)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
+- **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, left/right/tap presets
+- **Battery** status (Unified Battery `0x1004`) when logiops exposes it over D-Bus
+  (not available on packaged 0.3.5 — GUI shows n/a)
 - Forward/Back **remap** and **gesture** presets (persist via `/etc/logid.cfg` + `logid` restart)
 - Bolt quirk hint (“wiggle the mouse”) when devices disappear after restart
 - HID++ conflict check (Solaar / OpenLogi / ratbagd)
@@ -60,6 +64,8 @@ pkexec /usr/local/libexec/mxmaster-cfg-helper get-dpi
 pkexec /usr/local/libexec/mxmaster-cfg-helper set-dpi --dpi 1200
 pkexec /usr/local/libexec/mxmaster-cfg-helper get-smartshift
 pkexec /usr/local/libexec/mxmaster-cfg-helper get-hiresscroll
+pkexec /usr/local/libexec/mxmaster-cfg-helper get-thumbwheel
+pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery
 ```
 
 **Apply** in the GUI writes `/etc/logid.cfg` (backup `*.bak.mxmaster`) and restarts `logid`.
@@ -86,6 +92,8 @@ not “any nonzero = on”. See [docs/smartshift.md](docs/smartshift.md).
 | Run / launch | [docs/run.md](docs/run.md) | [docs/run.ru.md](docs/run.ru.md) |
 | SmartShift | [docs/smartshift.md](docs/smartshift.md) | [docs/smartshift.ru.md](docs/smartshift.ru.md) |
 | Hi-res scroll | [docs/hires-scroll.md](docs/hires-scroll.md) | [docs/hires-scroll.ru.md](docs/hires-scroll.ru.md) |
+| Thumb wheel | [docs/thumbwheel.md](docs/thumbwheel.md) | [docs/thumbwheel.ru.md](docs/thumbwheel.ru.md) |
+| Battery | [docs/battery.md](docs/battery.md) | [docs/battery.ru.md](docs/battery.ru.md) |
 | Gestures | [docs/gestures.md](docs/gestures.md) | [docs/gestures.ru.md](docs/gestures.ru.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) | [CONTRIBUTING.ru.md](CONTRIBUTING.ru.md) |
 
