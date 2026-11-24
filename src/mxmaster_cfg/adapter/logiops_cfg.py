@@ -152,7 +152,9 @@ def _hires_axes_from_profile(hiresscroll: dict[str, Any]) -> dict[str, Any]:
         return out
     if magnitude <= 0:
         return out
-    hires = bool(hiresscroll.get("hires", True))
+    # Prefer REL_WHEEL for notch-sized steps; HI_RES reintroduces micro-scroll
+    # between SmartShift ratchet clicks on MX Master 3S.
+    hires = bool(hiresscroll.get("hires", False))
     axis = "REL_WHEEL_HI_RES" if hires else "REL_WHEEL"
     # Keep one decimal when possible for libconfig readability.
     if abs(magnitude - round(magnitude)) < 1e-9:
@@ -314,7 +316,9 @@ class CfgWriter:
             # logiops 0.3.5: hires / invert / target (target = HID++ divert).
             # SAFETY: target:true WITHOUT up/down Axis swallows the wheel
             # (no page scroll). Only emit divert when both axes exist.
-            hires = "true" if hiresscroll.get("hires", True) else "false"
+            # Default hires false: SmartShift ratchet → scroll per notch, not
+            # continuous HI_RES micro-steps between clicks.
+            hires = "true" if hiresscroll.get("hires", False) else "false"
             invert = "true" if hiresscroll.get("invert", False) else "false"
             axes = _hires_axes_from_profile(hiresscroll)
             want_target = bool(hiresscroll.get("target", False))

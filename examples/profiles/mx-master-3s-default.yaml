@@ -14,18 +14,21 @@ device:
 
 dpi: 1000
 
+# Plasma/libinput ScrollFactor (kcminputrc). Safe “lines per notch” without divert.
+plasma_scroll_factor: 0.3
+
 smartshift:
   "on": true   # quote key — YAML 1.1 treats bare `on` as boolean
   threshold: 30
   # torque: 50   # uncomment if device/feature exposes torque in logiops
 
 hiresscroll:
-  hires: true
+  # hires:false with SmartShift on → scroll per ratchet notch (not micro-scroll).
+  hires: false
   invert: false
   target: false
-  # Scroll speed is NOT a HID++ 0x2121 field. Closest logiops control:
-  # target: true + scroll_multiplier (emits up/down Axis). Else use KDE
-  # System Settings → Mouse → Scroll speed / libinput.
+  # Optional experimental: target: true + scroll_multiplier (emits up/down Axis).
+  # Prefer plasma_scroll_factor above. Never set target without both axes.
   # scroll_multiplier: 1.0
 
 # Thumb wheel (HID++ 0x2150). divert=false → OS horizontal scroll.

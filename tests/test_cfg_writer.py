@@ -45,6 +45,7 @@ def test_render_hiresscroll_orphan_target_coerced_off() -> None:
 
 
 def test_render_hiresscroll_scroll_multiplier() -> None:
+    """Divert speed with hires on still emits HI_RES axes when explicitly set."""
     profile = {
         "device": {"name": "MX Master 3S"},
         "hiresscroll": {
@@ -61,6 +62,23 @@ def test_render_hiresscroll_scroll_multiplier() -> None:
     assert 'axis: "REL_WHEEL_HI_RES";' in text
     assert "axis_multiplier: 1.5;" in text
     assert "axis_multiplier: -1.5;" in text
+
+
+def test_render_hiresscroll_scroll_multiplier_defaults_rel_wheel() -> None:
+    """Ratchet-safe default: omitted hires → false → REL_WHEEL axes."""
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "hiresscroll": {
+            "target": True,
+            "scroll_multiplier": 0.5,
+        },
+    }
+    text = CfgWriter(profile).render()
+    assert "hires: false;" in text
+    assert "target: true;" in text
+    assert 'axis: "REL_WHEEL";' in text
+    assert "axis_multiplier: 0.5;" in text
+    assert "axis_multiplier: -0.5;" in text
 
 
 def test_render_hiresscroll_multiplier_ignored_without_target() -> None:

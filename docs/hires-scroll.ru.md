@@ -7,7 +7,8 @@
 ## GUI
 
 Чекбоксы: **hires**, **invert**, **target / divert**, плюс опционально
-**скорость через divert** (слайдер Axis `axis_multiplier`).
+множитель divert Axis. По умолчанию **hi-res ВЫКЛ** при SmartShift — режим
+трещотки скроллит **по щелчку**, а не от микродвижений между щелчками.
 
 Обновить читает `HiresScroll.GetConfig` → `bbb` (hires, invert, target).
 Применить пишет блок `hiresscroll { … }` через `CfgWriter`.
@@ -15,10 +16,11 @@
 В cfg logiops 0.3.5 **нет** отдельного `divert`: HID++ `Mode::Target` =
 libconfig **`target`**.
 
-В отличие от SmartShift, unset `getConfig` отдаёт дефолты
-`{true, false, false}` (не tri-state).
+Unset `getConfig` в logiops отдаёт `{true, false, false}`, но mxmaster-cfg
+по умолчанию ставит **`hires: false`** для дискретных щелчков MagSpeed.
 
-**Скорость скролла** — не бит режима `0x2121`: см. [scroll-speed.ru.md](scroll-speed.ru.md).
+**Скорость скролла** (строк на щелчок) — не бит `0x2121`: слайдер Plasma
+ScrollFactor; см. [scroll-speed.ru.md](scroll-speed.ru.md).
 
 ## Helper
 

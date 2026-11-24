@@ -7,7 +7,8 @@ Feature `HiresScroll` / HID++ `0x2121` via logiops.
 ## GUI
 
 Checkboxes: **hires**, **invert**, **target / divert**, plus optional
-**divert scroll speed** (Axis `axis_multiplier` slider).
+**divert Axis** multiplier. Default **hires OFF** with SmartShift so ratchet
+mode scrolls **per notch**, not on micro-movements between clicks.
 
 Refresh reads `HiresScroll.GetConfig` → `bbb` (hires, invert, target).
 Apply writes the `hiresscroll { … }` block through `CfgWriter`.
@@ -15,10 +16,11 @@ Apply writes the `hiresscroll { … }` block through `CfgWriter`.
 There is **no** separate `divert` key in logiops 0.3.5 cfg: HID++
 `Mode::Target` maps to libconfig **`target`**.
 
-Unlike SmartShift, unset `getConfig` returns defaults `{true, false, false}`
-(not a tri-state).
+Unset `getConfig` in logiops returns `{true, false, false}`, but mxmaster-cfg
+defaults profiles/GUI to **`hires: false`** for discrete MagSpeed notches.
 
-**Scroll speed** is not a `0x2121` mode bit — see [scroll-speed.md](scroll-speed.md).
+**Scroll speed** (lines per notch) is not a `0x2121` mode bit — use the Plasma
+ScrollFactor slider; see [scroll-speed.md](scroll-speed.md).
 
 ## Helper
 
