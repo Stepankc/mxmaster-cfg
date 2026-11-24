@@ -25,6 +25,9 @@ remap кнопок и жесты (CID `0xc3`).
 - **DPI** чтение/запись (live D-Bus + persist через cfg)
 - **SmartShift** on/off + threshold (корректный **tri-state** `GetConfig` в logiops)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
+- **Скорость скролла (ближайший реальный контроль)**: divert + слайдер
+  Axis `axis_multiplier` (в HID++ нет «скорости строк» Options+ —
+  см. [docs/scroll-speed.ru.md](docs/scroll-speed.ru.md))
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты left/right/tap
 - **Батарея** % + зарядка (Unified Battery `0x1004` коротким hidraw-probe;
   UPower/sysfs, если ядро отдаёт; в D-Bus logiops 0.3.5 Battery нет)
@@ -109,6 +112,8 @@ pkexec /usr/libexec/mxmaster-cfg-helper wake-receiver
 | Переподключение / wake | [docs/reconnect.md](docs/reconnect.md) | [docs/reconnect.ru.md](docs/reconnect.ru.md) |
 | SmartShift | [docs/smartshift.md](docs/smartshift.md) | [docs/smartshift.ru.md](docs/smartshift.ru.md) |
 | Hi-res scroll | [docs/hires-scroll.md](docs/hires-scroll.md) | [docs/hires-scroll.ru.md](docs/hires-scroll.ru.md) |
+| Скорость скролла | [docs/scroll-speed.md](docs/scroll-speed.md) | [docs/scroll-speed.ru.md](docs/scroll-speed.ru.md) |
+| Разрыв функций | [docs/feature-gap.md](docs/feature-gap.md) | [docs/feature-gap.ru.md](docs/feature-gap.ru.md) |
 | Thumb wheel | [docs/thumbwheel.md](docs/thumbwheel.md) | [docs/thumbwheel.ru.md](docs/thumbwheel.ru.md) |
 | Батарея | [docs/battery.md](docs/battery.md) | [docs/battery.ru.md](docs/battery.ru.md) |
 | Жесты | [docs/gestures.md](docs/gestures.md) | [docs/gestures.ru.md](docs/gestures.ru.md) |

@@ -25,6 +25,8 @@ button remap, and gesture button (CID `0xc3`).
 - **DPI** get/set (live D-Bus + persist through cfg)
 - **SmartShift** on/off + threshold (correct logiops **tri-state** `GetConfig`)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
+- **Scroll speed (closest real control)**: divert + Axis `axis_multiplier`
+  slider (HID++ has no Options+-style line speed — see [docs/scroll-speed.md](docs/scroll-speed.md))
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, left/right/tap presets
 - **Battery** % + charging (Unified Battery `0x1004` via short hidraw probe;
   UPower/sysfs when the kernel exposes it; logiops 0.3.5 D-Bus has no Battery)
@@ -108,6 +110,8 @@ not “any nonzero = on”. See [docs/smartshift.md](docs/smartshift.md).
 | Reconnect / wake | [docs/reconnect.md](docs/reconnect.md) | [docs/reconnect.ru.md](docs/reconnect.ru.md) |
 | SmartShift | [docs/smartshift.md](docs/smartshift.md) | [docs/smartshift.ru.md](docs/smartshift.ru.md) |
 | Hi-res scroll | [docs/hires-scroll.md](docs/hires-scroll.md) | [docs/hires-scroll.ru.md](docs/hires-scroll.ru.md) |
+| Scroll speed | [docs/scroll-speed.md](docs/scroll-speed.md) | [docs/scroll-speed.ru.md](docs/scroll-speed.ru.md) |
+| Feature gap | [docs/feature-gap.md](docs/feature-gap.md) | [docs/feature-gap.ru.md](docs/feature-gap.ru.md) |
 | Thumb wheel | [docs/thumbwheel.md](docs/thumbwheel.md) | [docs/thumbwheel.ru.md](docs/thumbwheel.ru.md) |
 | Battery | [docs/battery.md](docs/battery.md) | [docs/battery.ru.md](docs/battery.ru.md) |
 | Gestures | [docs/gestures.md](docs/gestures.md) | [docs/gestures.ru.md](docs/gestures.ru.md) |
