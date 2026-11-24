@@ -12,9 +12,11 @@ Subcommands print JSON on stdout (ok/error). Exit 0 on success.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -40,6 +42,14 @@ CID_BACK = 0x53
 CID_FORWARD = 0x56
 CID_GESTURE = 0xC3
 CID_MODE = 0xC4
+
+# HID++ 2.0 — Unified Battery (0x1004). Distinct software id so replies
+# are not confused with logid's own traffic when probing alongside it.
+HIDPP_SW_ID = 0x0B
+HIDPP_FEATURE_UNIFIED_BATTERY = 0x1004
+# Bolt / Unifying receivers + MX Master 3S Bluetooth (direct).
+HIDPP_RECEIVER_PIDS = {"c548", "c52b", "c532", "c52f"}
+HIDPP_DIRECT_PIDS = {"b034", "b023", "b019"}  # 3S / 3 / 2S BT examples
 
 
 def _must_root() -> None:
@@ -328,19 +338,61 @@ def _read_thumbwheel(path: str) -> dict[str, Any]:
     return out
 
 
-def _read_battery(path: str) -> dict[str, Any]:
-    """Probe Unified Battery (HID++ 0x1004) via logiops D-Bus if exposed.
+def _read_battery(
+    path: str | None = None,
+    *,
+    allow_stop_logid: bool = True,
+) -> dict[str, Any]:
+    """Resolve battery % / charging via D-Bus → UPower/sysfs → HID++ hidraw.
 
-    logiops **0.3.5 does not** ship a Battery IPC interface (confirmed on
-    MX Master 3S Bolt introspect). We still probe so a future logiops release
-    that adds ``pizza.pixl.LogiOps.Battery`` (or Device battery props) lights up
-    the GUI without code changes.
+    Packaged logiops **0.3.5** has no ``pizza.pixl.LogiOps.Battery`` IPC.
+    On Logi Bolt (MX Master 3S) UPower/sysfs also stay empty while the kernel
+    uses ``hid-generic``. Real % comes from a short HID++ Unified Battery
+    (``0x1004``) probe on the receiver hidraw — verified to coexist with a
+    running ``logid`` (no stop required). If the open/xfer fails, we briefly
+    stop/start logid for one read as a fallback (unless
+    ``allow_stop_logid=False``).
     """
     out: dict[str, Any] = {
         "battery_available": False,
         "battery": None,
     }
-    # 1) Dedicated Battery interface (not present in 0.3.5).
+    errors: list[str] = []
+
+    # 1) logiops D-Bus Battery (future-proof; absent on 0.3.5).
+    if path:
+        dbus = _read_battery_dbus(path)
+        if dbus.get("battery_available"):
+            return dbus
+        if dbus.get("battery_error"):
+            errors.append(str(dbus["battery_error"]))
+
+    # 2) UPower / sysfs (often works for Bluetooth; empty on Bolt+hid-generic).
+    up = _read_battery_upower_sysfs()
+    if up is not None:
+        out["battery_available"] = True
+        out["battery"] = up
+        return out
+    errors.append("UPower/sysfs: no Logitech mouse battery")
+
+    # 3) HID++ hidraw probe (Bolt / Unifying / BT direct).
+    hid = _read_battery_hidpp(allow_stop_logid=allow_stop_logid)
+    if hid is not None:
+        out["battery_available"] = True
+        out["battery"] = hid
+        return out
+    errors.append("HID++ 0x1004 hidraw probe failed")
+
+    out["battery_error"] = "; ".join(errors)
+    return out
+
+
+def _read_battery_dbus(path: str) -> dict[str, Any]:
+    """Probe logiops Battery interface / Device properties if present."""
+    out: dict[str, Any] = {
+        "battery_available": False,
+        "battery": None,
+    }
     if _iface_present(path, IFACE_BATTERY):
         for method in ("GetBattery", "GetLevel", "GetConfig", "GetStatus"):
             try:
@@ -362,7 +414,6 @@ def _read_battery(path: str) -> dict[str, Any]:
         )
         return out
 
-    # 2) Optional Device properties some forks might expose.
     for prop in ("BatteryPercentage", "BatteryLevel", "Battery", "Charge"):
         try:
             val = _get_property(path, IFACE_DEVICE, prop)
@@ -372,6 +423,7 @@ def _read_battery(path: str) -> dict[str, Any]:
                 out["battery"] = {
                     "percent": pct,
                     "charging": None,
+                    "status": None,
                     "source": f"{IFACE_DEVICE}.{prop}",
                     "feature": "0x1004",
                 }
@@ -381,8 +433,7 @@ def _read_battery(path: str) -> dict[str, Any]:
 
     out["battery_error"] = (
         "logiops D-Bus has no Battery interface "
-        f"(expected {IFACE_BATTERY} / HID++ 0x1004). "
-        "Packaged logiops 0.3.5 does not expose Unified Battery over IPC."
+        f"(expected {IFACE_BATTERY} / HID++ 0x1004)"
     )
     return out
 
@@ -427,7 +478,404 @@ def _parse_battery_payload(raw: str) -> dict[str, Any] | None:
             charging = bool(n)
     if percent is None:
         return None
-    return {"percent": percent, "charging": charging}
+    return {"percent": percent, "charging": charging, "status": None}
+
+
+def _map_unified_battery_status(status_byte: int) -> tuple[bool | None, str]:
+    """Map HID++ 0x1004 GetStatus status byte → (charging, status name).
+
+    0=discharging, 1=recharging, 2=almost full (still charging), 3=full,
+    4=error (kernel / Solaar convention).
+    """
+    if status_byte == 0:
+        return False, "discharging"
+    if status_byte in (1, 2):
+        return True, "charging" if status_byte == 1 else "almost_full"
+    if status_byte == 3:
+        return False, "full"
+    if status_byte == 4:
+        return None, "error"
+    return None, f"unknown_{status_byte}"
+
+
+def _read_battery_upower_sysfs() -> dict[str, Any] | None:
+    """Read Logitech mouse battery from sysfs power_supply or UPower."""
+    # sysfs first (kernel hid-logitech-hidpp exports this for some BT mice).
+    ps_root = Path("/sys/class/power_supply")
+    if ps_root.is_dir():
+        for entry in sorted(ps_root.iterdir()):
+            try:
+                name = entry.name.lower()
+                model = _read_sysfs_str(entry / "model_name")
+                manuf = _read_sysfs_str(entry / "manufacturer")
+                scope = _read_sysfs_str(entry / "scope")
+                blob = " ".join(
+                    x for x in (name, model or "", manuf or "", scope or "") if x
+                ).lower()
+                if not any(
+                    k in blob
+                    for k in (
+                        "logitech",
+                        "mx master",
+                        "hidpp",
+                        "046d",
+                        "mouse",
+                    )
+                ):
+                    # Skip laptop / UPS batteries.
+                    if "bat" in name and "hid" not in name and "logitech" not in blob:
+                        continue
+                    if "hid" not in name and "logitech" not in blob:
+                        continue
+                cap = _read_sysfs_str(entry / "capacity")
+                pct = _coerce_percent(int(cap) if cap and cap.isdigit() else None)
+                if pct is None:
+                    continue
+                st = (_read_sysfs_str(entry / "status") or "").lower()
+                charging: bool | None
+                status: str
+                if st == "charging":
+                    charging, status = True, "charging"
+                elif st == "full":
+                    charging, status = False, "full"
+                elif st == "discharging":
+                    charging, status = False, "discharging"
+                else:
+                    charging, status = None, st or "unknown"
+                return {
+                    "percent": pct,
+                    "charging": charging,
+                    "status": status,
+                    "source": f"sysfs:{entry.name}",
+                    "feature": "power_supply",
+                    "model": model,
+                }
+            except (OSError, ValueError):
+                continue
+
+    # UPower EnumerateDevices (Bluetooth LE Battery often appears here).
+    if shutil.which("busctl") is None:
+        return None
+    r = subprocess.run(
+        [
+            "busctl",
+            "--system",
+            "call",
+            "org.freedesktop.UPower",
+            "/org/freedesktop/UPower",
+            "org.freedesktop.UPower",
+            "EnumerateDevices",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    if r.returncode != 0:
+        return None
+    paths = re.findall(r"/org/freedesktop/UPower/devices/[A-Za-z0-9_]+", r.stdout)
+    for upath in paths:
+        try:
+            model = _upower_prop(upath, "Model")
+            vendor = _upower_prop(upath, "Vendor")
+            native = _upower_prop(upath, "NativePath")
+            # Type: 2 = Battery
+            typ = _upower_prop(upath, "Type")
+            blob = " ".join(
+                str(x) for x in (model, vendor, native, upath) if x is not None
+            ).lower()
+            if not any(
+                k in blob for k in ("logitech", "mx master", "mouse", "hidpp", "046d")
+            ):
+                continue
+            if typ is not None and int(typ) not in (0, 2):  # 0 unknown, 2 battery
+                # Still allow if name clearly matches a mouse.
+                if "mouse" not in blob and "mx master" not in blob:
+                    continue
+            pct_raw = _upower_prop(upath, "Percentage")
+            pct = _coerce_percent(
+                int(round(float(pct_raw))) if pct_raw is not None else None
+            )
+            if pct is None:
+                continue
+            # State: 1 charging, 2 discharging, 3 empty, 4 fully charged, …
+            state = _upower_prop(upath, "State")
+            state_i = int(state) if state is not None else -1
+            if state_i == 1:
+                charging, status = True, "charging"
+            elif state_i == 2:
+                charging, status = False, "discharging"
+            elif state_i == 4:
+                charging, status = False, "full"
+            else:
+                charging, status = None, f"upower_state_{state_i}"
+            return {
+                "percent": pct,
+                "charging": charging,
+                "status": status,
+                "source": f"upower:{upath.rsplit('/', 1)[-1]}",
+                "feature": "UPower",
+                "model": model,
+            }
+        except (TypeError, ValueError, RuntimeError):
+            continue
+    return None
+
+
+def _read_sysfs_str(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+
+def _upower_prop(path: str, prop: str) -> Any:
+    r = subprocess.run(
+        [
+            "busctl",
+            "--system",
+            "get-property",
+            "org.freedesktop.UPower",
+            path,
+            "org.freedesktop.UPower.Device",
+            prop,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or f"upower {prop}")
+    return _parse_busctl_variant(r.stdout.strip())
+
+
+def _hidpp_candidate_nodes() -> list[str]:
+    """hidraw nodes likely carrying HID++ short/long reports (0x10 / 0x11)."""
+    nodes: list[str] = []
+    for uevent in sorted(glob.glob("/sys/class/hidraw/hidraw*/device/uevent")):
+        try:
+            text = Path(uevent).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        m = re.search(r"HID_ID=0003:0000046D:0000([0-9A-Fa-f]{4})", text)
+        if not m:
+            continue
+        pid = m.group(1).lower()
+        if pid not in HIDPP_RECEIVER_PIDS and pid not in HIDPP_DIRECT_PIDS:
+            continue
+        desc_path = Path(uevent).parent / "report_descriptor"
+        try:
+            desc = desc_path.read_bytes()
+        except OSError:
+            continue
+        # Vendor collection with Report ID 0x10 (HID++ short).
+        if b"\x85\x10" not in desc:
+            continue
+        name = Path(uevent).parent.parent.name  # hidrawN
+        nodes.append(f"/dev/{name}")
+    return nodes
+
+
+def _hidpp_drain(fd: int) -> None:
+    while True:
+        ready, _, _ = select.select([fd], [], [], 0)
+        if not ready:
+            break
+        try:
+            os.read(fd, 64)
+        except OSError:
+            break
+
+
+def _hidpp_xfer(fd: int, req: bytes, *, timeout: float = 1.2) -> bytes | None:
+    """Write a HID++ request and wait for a matching software-id reply."""
+    _hidpp_drain(fd)
+    os.write(fd, req)
+    end = time.time() + timeout
+    sw = req[3] & 0x0F
+    dev = req[1]
+    while time.time() < end:
+        ready, _, _ = select.select([fd], [], [], 0.2)
+        if not ready:
+            continue
+        try:
+            data = os.read(fd, 64)
+        except OSError:
+            continue
+        if len(data) < 4:
+            continue
+        if data[1] != dev:
+            continue
+        # Protocol error replies use sub_id 0x8f / 0xff.
+        if data[2] in (0x8F, 0xFF):
+            return data
+        if (data[3] & 0x0F) == sw:
+            return data
+    return None
+
+
+def _hidpp_get_feature_index(fd: int, device_index: int, feature: int) -> int | None:
+    """Root (0x0000) GetFeature → feature index, or None if absent/error."""
+    req = bytes(
+        [
+            0x10,
+            device_index & 0xFF,
+            0x00,  # Root feature index
+            (0x00 << 4) | HIDPP_SW_ID,  # GetFeature fn=0
+            (feature >> 8) & 0xFF,
+            feature & 0xFF,
+            0x00,
+        ]
+    )
+    rep = _hidpp_xfer(fd, req, timeout=0.9)
+    if rep is None or len(rep) < 5:
+        return None
+    if rep[2] in (0x8F, 0xFF):
+        return None
+    # Success: feature index in params[0] (byte 4); 0 means not found on some
+    # devices — treat 0 as missing unless feature was Root itself.
+    idx = rep[4]
+    if idx == 0 and feature != 0x0000:
+        return None
+    return idx
+
+
+def _hidpp_unified_battery_on_fd(
+    fd: int, device_index: int
+) -> dict[str, Any] | None:
+    feat_idx = _hidpp_get_feature_index(
+        fd, device_index, HIDPP_FEATURE_UNIFIED_BATTERY
+    )
+    if feat_idx is None:
+        return None
+    # GetStatus function 1.
+    req = bytes(
+        [
+            0x10,
+            device_index & 0xFF,
+            feat_idx & 0xFF,
+            (0x01 << 4) | HIDPP_SW_ID,
+            0x00,
+            0x00,
+            0x00,
+        ]
+    )
+    rep = _hidpp_xfer(fd, req, timeout=1.5)
+    if rep is None or len(rep) < 7:
+        return None
+    if rep[2] in (0x8F, 0xFF):
+        return None
+    percent = int(rep[4])
+    level = int(rep[5])
+    status_byte = int(rep[6])
+    if percent < 0 or percent > 100:
+        return None
+    charging, status = _map_unified_battery_status(status_byte)
+    return {
+        "percent": percent,
+        "charging": charging,
+        "status": status,
+        "level_bitmask": level,
+        "status_byte": status_byte,
+        "feature": "0x1004",
+        "feature_index": feat_idx,
+        "device_index": device_index,
+        "raw": rep.hex(),
+    }
+
+
+def _hidpp_probe_on_nodes(
+    nodes: list[str],
+) -> dict[str, Any] | None:
+    # Receivers: try slots 1–6. Direct BT/USB: device index 0xFF (and 0x01).
+    slot_sets = (
+        list(range(1, 7)) + [0xFF, 0x01]
+    )
+    for node in nodes:
+        try:
+            fd = os.open(node, os.O_RDWR | os.O_NONBLOCK)
+        except OSError:
+            continue
+        try:
+            for slot in slot_sets:
+                bat = _hidpp_unified_battery_on_fd(fd, slot)
+                if bat is not None:
+                    bat["source"] = f"hidpp:{node}"
+                    bat["hidraw"] = node
+                    return bat
+        finally:
+            os.close(fd)
+    return None
+
+
+def _logid_was_active() -> bool:
+    return (
+        subprocess.run(
+            ["systemctl", "is-active", "--quiet", "logid"],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _restart_logid_and_wait(*, wake: bool = True) -> None:
+    subprocess.run(
+        ["systemctl", "start", "logid"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    found: list[str] = []
+    for _ in range(15):
+        time.sleep(0.35)
+        found = _device_paths()
+        if found:
+            return
+    if wake:
+        _wake_bolt_receiver()
+        for _ in range(20):
+            time.sleep(0.4)
+            if _device_paths():
+                return
+
+
+def _read_battery_hidpp(*, allow_stop_logid: bool = True) -> dict[str, Any] | None:
+    """Short Unified Battery probe; prefer coexistence with running logid."""
+    nodes = _hidpp_candidate_nodes()
+    if not nodes:
+        return None
+
+    # Prefer without stopping logid (works on Bolt MX Master 3S smoke).
+    bat = _hidpp_probe_on_nodes(nodes)
+    if bat is not None:
+        bat["logid_stopped"] = False
+        return bat
+
+    if not allow_stop_logid:
+        return None
+
+    was_active = _logid_was_active()
+    if was_active:
+        subprocess.run(
+            ["systemctl", "stop", "logid"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        time.sleep(0.4)
+    try:
+        # hidraw nodes can renumber after USB events; refresh list.
+        nodes = _hidpp_candidate_nodes() or nodes
+        bat = _hidpp_probe_on_nodes(nodes)
+        if bat is not None:
+            bat["logid_stopped"] = bool(was_active)
+            bat["source"] = bat.get("source", "hidpp") + "+logid-stop"
+            return bat
+        return None
+    finally:
+        if was_active:
+            _restart_logid_and_wait(wake=True)
 
 
 def _read_smartshift(path: str) -> dict[str, Any]:
@@ -507,11 +955,23 @@ def cmd_get_thumbwheel(args: argparse.Namespace) -> int:
 
 
 def cmd_get_battery(args: argparse.Namespace) -> int:
-    path = _device_index_path(args.device)
+    # Prefer the logid device path when present; HID++/UPower still run if not.
+    paths = _device_paths()
+    path: str | None = None
+    want = f"{ROOT}/devices/{int(args.device)}"
+    if want in paths:
+        path = want
+    elif paths and int(args.device) < len(paths):
+        path = paths[int(args.device)]
     try:
-        data = {"path": path, **_read_battery(path)}
-        # Not having Battery IPC is expected on 0.3.5 — still ok:true so GUI
-        # can show "n/a" without treating it as a hard failure.
+        data = {
+            "path": path,
+            **_read_battery(
+                path,
+                allow_stop_logid=not bool(args.no_hidpp_stop),
+            ),
+        }
+        # Unavailable is still ok:true so the GUI can show "n/a".
         return _ok(data)
     except Exception as exc:  # noqa: BLE001
         return _fail(str(exc), path=path)
@@ -673,8 +1133,6 @@ def cmd_set_smartshift(args: argparse.Namespace) -> int:
 
 def _wake_bolt_receiver() -> bool:
     """Soft-reset Logi Bolt USB (046d:c548) to encourage device re-detect."""
-    import glob
-
     for vendor in glob.glob("/sys/bus/usb/devices/*/idVendor"):
         try:
             if Path(vendor).read_text().strip() != "046d":
@@ -923,9 +1381,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     gb = sub.add_parser(
         "get-battery",
-        help="probe Unified Battery 0x1004 via logiops D-Bus (may be n/a)",
+        help=(
+            "battery %% via D-Bus / UPower / HID++ 0x1004 hidraw "
+            "(coexists with logid; brief stop only as fallback)"
+        ),
     )
     gb.add_argument("--device", type=int, default=0)
+    gb.add_argument(
+        "--no-hidpp-stop",
+        action="store_true",
+        help="never stop logid for HID++ fallback (coexist-only)",
+    )
 
     a = sub.add_parser("apply-cfg", help="write logid.cfg + restart logid")
     a.add_argument("--file", help="path to cfg text (else stdin)")

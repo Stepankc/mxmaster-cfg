@@ -544,21 +544,41 @@ class MainWindow(QMainWindow):
         bat = dev.get("battery")
         if isinstance(bat, dict) and bat.get("percent") is not None:
             pct = int(bat["percent"])
+            status = str(bat.get("status") or "")
             charging = bat.get("charging")
-            if charging is True:
+            if status == "charging" or (charging is True and status != "full"):
                 state = "зарядка"
-            elif charging is False:
+            elif status == "almost_full":
+                state = "почти полный (зарядка)"
+            elif status == "full":
+                state = "полный"
+            elif status == "discharging" or charging is False:
                 state = "разряд"
             else:
-                state = "?"
-            src = bat.get("source") or "D-Bus"
-            self.lbl_battery.setText("%s%% (%s) · %s" % (pct, state, src))
+                state = status or "?"
+            src = bat.get("source") or "?"
+            # Shorten noisy hidraw paths for the status row.
+            if src.startswith("hidpp:"):
+                src = "HID++ 0x1004"
+            elif src.startswith("upower:"):
+                src = "UPower"
+            elif src.startswith("sysfs:"):
+                src = "sysfs"
+            note = ""
+            if bat.get("logid_stopped"):
+                note = " · logid pause"
+            self.lbl_battery.setText("%s%% (%s) · %s%s" % (pct, state, src, note))
             return
         err = dev.get("battery_error") or "н/д"
         # Keep the UI short; full reason is in helper JSON.
-        if "no Battery interface" in str(err) or "0x1004" in str(err):
+        err_s = str(err)
+        if "hidraw probe failed" in err_s and "UPower" in err_s:
             self.lbl_battery.setText(
-                "н/д — logiops 0.3.5 не отдаёт Unified Battery (0x1004) по D-Bus"
+                "н/д — нет данных UPower/sysfs и HID++ 0x1004"
+            )
+        elif "no Battery interface" in err_s:
+            self.lbl_battery.setText(
+                "н/д — батарея недоступна (D-Bus/UPower/HID++)"
             )
         else:
             self.lbl_battery.setText("н/д — %s" % err)

@@ -238,6 +238,9 @@ def set_thumbwheel(
     return run_helper(argv).data
 
 
-def get_battery(device: int = 0) -> dict[str, Any]:
-    """Probe Unified Battery 0x1004 via logiops D-Bus (often unavailable)."""
-    return run_helper(["get-battery", "--device", str(device)]).data
+def get_battery(device: int = 0, *, allow_stop_logid: bool = True) -> dict[str, Any]:
+    """Battery % via D-Bus / UPower / HID++ 0x1004 (helper; may pause logid)."""
+    argv = ["get-battery", "--device", str(device)]
+    if not allow_stop_logid:
+        argv.append("--no-hidpp-stop")
+    return run_helper(argv, timeout=90.0).data
