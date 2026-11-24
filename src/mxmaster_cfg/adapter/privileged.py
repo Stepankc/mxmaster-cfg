@@ -16,9 +16,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-HELPER_INSTALLED = Path("/usr/local/libexec/mxmaster-cfg-helper")
+# Packaged (.deb) path first; legacy install-helper path second.
+HELPER_CANDIDATES = (
+    Path("/usr/libexec/mxmaster-cfg-helper"),
+    Path("/usr/local/libexec/mxmaster-cfg-helper"),
+)
 
-# Dev fallback: scaffold tree next to this package (…/scaffold/helper/…)
+# Dev fallback: repo tree next to this package (…/mxmaster-cfg/helper/…)
 _HELPER_DEV = (
     Path(__file__).resolve().parents[3] / "helper" / "mxmaster-cfg-helper"
 )
@@ -36,13 +40,14 @@ class HelperResult:
 
 
 def resolve_helper() -> Path:
-    if HELPER_INSTALLED.is_file() and os.access(HELPER_INSTALLED, os.X_OK):
-        return HELPER_INSTALLED
+    for candidate in HELPER_CANDIDATES:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
     if _HELPER_DEV.is_file():
         return _HELPER_DEV
     raise PrivilegedHelperError(
         "mxmaster-cfg-helper not found. Run: "
-        "scaffold/scripts/install-helper.sh"
+        "scripts/install-helper.sh (or install the .deb)"
     )
 
 

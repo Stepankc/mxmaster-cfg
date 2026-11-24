@@ -20,8 +20,8 @@ Unlike SmartShift, unset `getConfig` returns defaults `{true, false, false}`
 ## Helper
 
 ```bash
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-hiresscroll
-pkexec /usr/local/libexec/mxmaster-cfg-helper set-hiresscroll \
+pkexec /usr/libexec/mxmaster-cfg-helper get-hiresscroll
+pkexec /usr/libexec/mxmaster-cfg-helper set-hiresscroll \
   --hires true --invert false --target false
 ```
 

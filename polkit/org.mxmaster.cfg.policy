@@ -4,8 +4,8 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <policyconfig>
-  <vendor>MX Master Linux configurator (name TBD)</vendor>
-  <vendor_url>https://example.invalid/mxmaster-cfg</vendor_url>
+  <vendor>MX Master Config (Linux)</vendor>
+  <vendor_url>https://github.com/Stepankc/mxmaster-cfg</vendor_url>
 
   <action id="org.mxmaster.cfg.helper">
     <description gettext-domain="mxmaster-cfg">
@@ -28,7 +28,8 @@
       <!-- keep credentials briefly so Apply / Refresh don't re-prompt every click -->
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/libexec/mxmaster-cfg-helper</annotate>
+    <!-- Packaged path; install-helper.sh also installs here. -->
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/mxmaster-cfg-helper</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 </policyconfig>

@@ -1,6 +1,8 @@
-mxmaster-cfg (0.0.0-1) UNRELEASED; urgency=low
+mxmaster-cfg (0.2.0-1) unstable; urgency=medium
 
-  * Initial packaging sketch (scaffold). Project name TBD.
-  * Depends on logiops (>= 0.3) or placeholder logiops-bolt-tbd pending spike.
+  * Named XDG profiles (save/load/delete/apply) under
+    ~/.config/mxmaster-cfg/profiles/.
+  * Make packaging/debian buildable with dpkg-buildpackage.
+  * Install desktop entry, polkit policy, and helper to /usr/libexec.
 
- -- Stepan <stepan@example.invalid>  Sun, 23 Nov 2026 00:00:00 +0000
+ -- Stepan Korobkov <stepan.korobkov@maergroup.ru>  Tue, 24 Nov 2026 07:10:00 +0000
