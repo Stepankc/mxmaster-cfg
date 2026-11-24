@@ -176,47 +176,6 @@ class _ValueSlider(QWidget):
         self.lbl.setEnabled(enabled)
         super().setEnabled(enabled)
 
-# Thumb wheel left/right gesture presets (need divert=true except "OS default").
-# Each entry: (label, gesture_dict | None). None = omit side (OS handles scroll).
-THUMB_SCROLL_PRESETS: list[tuple[str, dict[str, Any] | None]] = [
-    ("ОС / не divert (omit)", None),
-    (
-        "Axis REL_HWHEEL_HI_RES",
-        {
-            "mode": "Axis",
-            "axis": "REL_HWHEEL_HI_RES",
-            "axis_multiplier": 1,
-        },
-    ),
-    (
-        "Axis REL_HWHEEL",
-        {"mode": "Axis", "axis": "REL_HWHEEL", "axis_multiplier": 1},
-    ),
-    ("Отключить (NoPress)", {"mode": "NoPress"}),
-    (
-        "Громкость (OnInterval)",
-        {
-            "mode": "OnInterval",
-            "interval": 2,
-            "action": {"type": "Keypress", "keys": ["KEY_VOLUMEUP"]},
-        },
-    ),
-]
-
-# Opposite side volume key for the volume preset (left vs right).
-_THUMB_VOL_KEYS = {
-    "left": ["KEY_VOLUMEDOWN"],
-    "right": ["KEY_VOLUMEUP"],
-}
-
-THUMB_TAP_PRESETS: list[tuple[str, dict[str, Any] | None]] = [
-    ("Нет", None),
-    ("None (явный)", {"type": "None"}),
-    ("KEY_MUTE", {"type": "Keypress", "keys": ["KEY_MUTE"]}),
-    ("KEY_PLAYPAUSE", {"type": "Keypress", "keys": ["KEY_PLAYPAUSE"]}),
-    ("KEY_LEFTMETA", {"type": "Keypress", "keys": ["KEY_LEFTMETA"]}),
-]
-
 # Gesture direction action presets → profile action dict.
 GESTURE_DIRS = ("Up", "Down", "Left", "Right", "None")  # None = tap
 GESTURE_PRESETS: list[tuple[str, dict[str, Any]]] = [
@@ -308,38 +267,6 @@ def _multiplier_from_hires_axes(hr: dict[str, Any]) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
-
-
-def _match_thumb_scroll_preset(thumb: dict[str, Any]) -> int:
-    left = thumb.get("left")
-    if not isinstance(left, dict):
-        return 0  # OS / omit
-    mode = left.get("mode")
-    axis = left.get("axis")
-    for idx, (_label, preset) in enumerate(THUMB_SCROLL_PRESETS):
-        if preset is None:
-            continue
-        if preset.get("mode") != mode:
-            continue
-        if mode == "Axis" and preset.get("axis") != axis:
-            continue
-        if mode == "OnInterval" and preset.get("mode") == "OnInterval":
-            return idx
-        if mode in {"Axis", "NoPress"}:
-            return idx
-    return 0
-
-
-def _match_thumb_tap_preset(tap: Any) -> int:
-    if not isinstance(tap, dict):
-        return 0
-    sig = action_signature(tap)
-    for idx, (_label, preset) in enumerate(THUMB_TAP_PRESETS):
-        if preset is None:
-            continue
-        if action_signature(preset) == sig:
-            return idx
-    return 0
 
 
 class MainWindow(QMainWindow):
@@ -575,6 +502,9 @@ class MainWindow(QMainWindow):
         hr_form.addRow(self.lbl_hr_hint)
         layout.addWidget(hr_box)
 
+        # Shared KEY_* completer model (buttons + thumb free-form editors).
+        self._key_completer_model = QStringListModel(list(COMMON_KEY_NAMES))
+
         # --- Thumb wheel (feature 0x2150) ---
         tw_box = QGroupBox("Thumb wheel (0x2150)")
         tw_form = QFormLayout(tw_box)
@@ -587,34 +517,132 @@ class MainWindow(QMainWindow):
         self.chk_tw_invert = QCheckBox("Invert (инверсия направления)")
         self.chk_tw_invert.setChecked(False)
         self.chk_tw_invert.setToolTip("thumbwheel.invert")
+
         self.combo_tw_scroll = QComboBox()
-        for label, _g in THUMB_SCROLL_PRESETS:
-            self.combo_tw_scroll.addItem(label)
+        for preset_id, label, _g in THUMB_SCROLL_PRESETS:
+            self.combo_tw_scroll.addItem(label, preset_id)
         self.combo_tw_scroll.setCurrentIndex(0)
         self.combo_tw_scroll.setToolTip(
-            "Пресет для left/right. Для Axis/NoPress/громкости нужен divert."
+            "Пресет left/right или Axis / OnInterval Keypress (свой). "
+            "Нужен divert."
         )
+        self.combo_tw_scroll.currentIndexChanged.connect(
+            self._on_thumb_scroll_changed
+        )
+
+        self.edit_tw_axis = QLineEdit(DEFAULT_CUSTOM_AXIS)
+        self.edit_tw_axis.setPlaceholderText("REL_HWHEEL_HI_RES")
+        self.edit_tw_axis.setToolTip(
+            "Свободный Axis: имя оси (REL_HWHEEL*, REL_WHEEL*…)."
+        )
+        axis_completer = QCompleter(list(COMMON_AXIS_NAMES), self.edit_tw_axis)
+        axis_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        axis_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.edit_tw_axis.setCompleter(axis_completer)
+        self.spin_tw_mult = QDoubleSpinBox()
+        self.spin_tw_mult.setRange(0.05, 20.0)
+        self.spin_tw_mult.setSingleStep(0.25)
+        self.spin_tw_mult.setDecimals(3)
+        self.spin_tw_mult.setValue(DEFAULT_CUSTOM_MULTIPLIER)
+        self.spin_tw_mult.setToolTip(
+            "axis_multiplier (модуль; left −, right +)."
+        )
+        self.tw_axis_row = QWidget()
+        tw_axis_l = QHBoxLayout(self.tw_axis_row)
+        tw_axis_l.setContentsMargins(0, 0, 0, 0)
+        tw_axis_l.addWidget(self.edit_tw_axis, stretch=1)
+        tw_axis_l.addWidget(QLabel("×"))
+        tw_axis_l.addWidget(self.spin_tw_mult)
+        self.tw_axis_row.setVisible(False)
+
+        self.spin_tw_interval = QSpinBox()
+        self.spin_tw_interval.setRange(1, 64)
+        self.spin_tw_interval.setValue(DEFAULT_CUSTOM_INTERVAL)
+        self.spin_tw_interval.setToolTip("OnInterval interval (шаги колеса).")
+        self.edit_tw_scroll_keys = QLineEdit()
+        self.edit_tw_scroll_keys.setPlaceholderText(
+            "KEY_LEFTCTRL + KEY_TAB"
+        )
+        self.edit_tw_scroll_keys.setToolTip(
+            "OnInterval Keypress: KEY_* через + / запятую / пробел."
+        )
+        scroll_key_completer = QCompleter(
+            self._key_completer_model, self.edit_tw_scroll_keys
+        )
+        scroll_key_completer.setCaseSensitivity(
+            Qt.CaseSensitivity.CaseInsensitive
+        )
+        scroll_key_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.edit_tw_scroll_keys.setCompleter(scroll_key_completer)
+        self.tw_interval_row = QWidget()
+        tw_iv_l = QHBoxLayout(self.tw_interval_row)
+        tw_iv_l.setContentsMargins(0, 0, 0, 0)
+        tw_iv_l.addWidget(QLabel("interval"))
+        tw_iv_l.addWidget(self.spin_tw_interval)
+        tw_iv_l.addWidget(self.edit_tw_scroll_keys, stretch=1)
+        self.tw_interval_row.setVisible(False)
+
         self.combo_tw_tap = QComboBox()
-        for label, _a in THUMB_TAP_PRESETS:
-            self.combo_tw_tap.addItem(label)
-        self.combo_tw_tap.setCurrentIndex(0)
-        self.combo_tw_tap.setToolTip(
-            "thumbwheel.tap (одиночный тап). Haptic в схеме logiops 0.3.5 нет."
-        )
+        self.combo_tw_touch = QComboBox()
+        self.combo_tw_proxy = QComboBox()
+        self.tw_action_key_edits: dict[str, QLineEdit] = {}
+        for combo, field, tip in (
+            (self.combo_tw_tap, "tap", "thumbwheel.tap (одиночный тап)"),
+            (
+                self.combo_tw_touch,
+                "touch",
+                "thumbwheel.touch (касание обода)",
+            ),
+            (
+                self.combo_tw_proxy,
+                "proxy",
+                "thumbwheel.proxy (приближение пальца)",
+            ),
+        ):
+            for preset_id, label, _a in THUMB_ACTION_PRESETS:
+                combo.addItem(label, preset_id)
+            combo.setCurrentIndex(0)
+            combo.setToolTip(tip + ". Нужен divert. Haptic нет в 0.3.5.")
+            combo.currentIndexChanged.connect(self._on_thumb_action_changed)
+            key_edit = QLineEdit()
+            key_edit.setPlaceholderText("KEY_MUTE  /  Ctrl+M")
+            key_edit.setToolTip(
+                "Свободный Keypress для "
+                + field
+                + ": KEY_* через + / , / пробел."
+            )
+            key_completer = QCompleter(self._key_completer_model, key_edit)
+            key_completer.setCaseSensitivity(
+                Qt.CaseSensitivity.CaseInsensitive
+            )
+            key_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+            key_edit.setCompleter(key_completer)
+            key_edit.setVisible(False)
+            self.tw_action_key_edits[field] = key_edit
+
         self.lbl_tw_state = QLabel("D-Bus: —")
         self.lbl_tw_state.setStyleSheet("color: #555;")
         self.lbl_tw_hint = QLabel(
             "GetConfig → bb (divert, invert). left/right/tap/touch/proxy — "
-            "только cfg. Haptic не поддерживается схемой logiops 0.3.5."
+            "cfg (Apply). Неизвестный Axis/Keypress грузится как «свой». "
+            "Haptic не в схеме logiops 0.3.5."
         )
         self.lbl_tw_hint.setWordWrap(True)
         tw_form.addRow(self.chk_tw_divert)
         tw_form.addRow(self.chk_tw_invert)
         tw_form.addRow("Left/Right:", self.combo_tw_scroll)
+        tw_form.addRow("Axis (свой):", self.tw_axis_row)
+        tw_form.addRow("OnInterval (свой):", self.tw_interval_row)
         tw_form.addRow("Tap:", self.combo_tw_tap)
+        tw_form.addRow("", self.tw_action_key_edits["tap"])
+        tw_form.addRow("Touch:", self.combo_tw_touch)
+        tw_form.addRow("", self.tw_action_key_edits["touch"])
+        tw_form.addRow("Proxy:", self.combo_tw_proxy)
+        tw_form.addRow("", self.tw_action_key_edits["proxy"])
         tw_form.addRow(self.lbl_tw_state)
         tw_form.addRow(self.lbl_tw_hint)
         layout.addWidget(tw_box)
+        self._sync_thumb_detail_editors()
 
         # --- Button remaps (all remappable CIDs) ---
         remap_box = QGroupBox("Remap кнопок (CID)")
@@ -622,7 +650,6 @@ class MainWindow(QMainWindow):
         self.button_combos: dict[int, QComboBox] = {}
         self.button_key_edits: dict[int, QLineEdit] = {}
         self.button_host_edits: dict[int, QLineEdit] = {}
-        self._key_completer_model = QStringListModel(list(COMMON_KEY_NAMES))
         for info in REMAPPABLE_BUTTONS:
             combo = QComboBox()
             for preset_id, preset_label, _action in BUTTON_ACTION_PRESETS:
@@ -1114,36 +1141,60 @@ class MainWindow(QMainWindow):
             + (f" ({live_nodes[0]})" if live_nodes else "")
         )
 
+    def _selected_thumb_scroll_preset(self) -> str:
+        data = self.combo_tw_scroll.currentData()
+        return data if isinstance(data, str) else SCROLL_OMIT
+
+    def _selected_thumb_action_preset(self, field: str) -> str:
+        combo = {
+            "tap": self.combo_tw_tap,
+            "touch": self.combo_tw_touch,
+            "proxy": self.combo_tw_proxy,
+        }.get(field)
+        if combo is None:
+            return THUMB_ACTION_OMIT
+        data = combo.currentData()
+        return data if isinstance(data, str) else THUMB_ACTION_OMIT
+
+    def _on_thumb_scroll_changed(self, _index: int = 0) -> None:
+        self._sync_thumb_detail_editors()
+
+    def _on_thumb_action_changed(self, _index: int = 0) -> None:
+        self._sync_thumb_detail_editors()
+
+    def _sync_thumb_detail_editors(self) -> None:
+        scroll = self._selected_thumb_scroll_preset()
+        self.tw_axis_row.setVisible(scroll == SCROLL_AXIS_CUSTOM)
+        self.tw_interval_row.setVisible(scroll == SCROLL_INTERVAL_KEY_CUSTOM)
+        for field, edit in self.tw_action_key_edits.items():
+            edit.setVisible(
+                self._selected_thumb_action_preset(field) == ACTION_KEY_CUSTOM
+            )
+
+    def _set_combo_data(self, combo: QComboBox, preset_id: str) -> None:
+        idx = 0
+        for i in range(combo.count()):
+            if combo.itemData(i) == preset_id:
+                idx = i
+                break
+        combo.setCurrentIndex(idx)
+
     def _build_thumbwheel(self) -> dict[str, Any]:
-        divert = self.chk_tw_divert.isChecked()
-        invert = self.chk_tw_invert.isChecked()
-        tw: dict[str, Any] = {"divert": divert, "invert": invert}
-
-        scroll_idx = self.combo_tw_scroll.currentIndex()
-        scroll_base = THUMB_SCROLL_PRESETS[scroll_idx][1]
-        if divert and isinstance(scroll_base, dict):
-            for side in ("left", "right"):
-                gest = dict(scroll_base)
-                # Volume preset: opposite keys per side.
-                if gest.get("mode") == "OnInterval":
-                    action = dict(gest.get("action") or {})
-                    if action.get("type") == "Keypress":
-                        action["keys"] = list(_THUMB_VOL_KEYS[side])
-                        gest["action"] = action
-                elif gest.get("mode") == "Axis":
-                    # Mirror multiplier: left negative, right positive.
-                    mult = int(gest.get("axis_multiplier", 1) or 1)
-                    gest["axis_multiplier"] = -abs(mult) if side == "left" else abs(mult)
-                tw[side] = gest
-
-        tap_idx = self.combo_tw_tap.currentIndex()
-        tap = THUMB_TAP_PRESETS[tap_idx][1]
-        if divert and isinstance(tap, dict):
-            action = dict(tap)
-            if "keys" in action:
-                action["keys"] = list(action["keys"])
-            tw["tap"] = action
-        return tw
+        return build_thumbwheel(
+            divert=self.chk_tw_divert.isChecked(),
+            invert=self.chk_tw_invert.isChecked(),
+            scroll_preset=self._selected_thumb_scroll_preset(),
+            tap_preset=self._selected_thumb_action_preset("tap"),
+            touch_preset=self._selected_thumb_action_preset("touch"),
+            proxy_preset=self._selected_thumb_action_preset("proxy"),
+            axis=self.edit_tw_axis.text(),
+            multiplier=float(self.spin_tw_mult.value()),
+            interval=int(self.spin_tw_interval.value()),
+            scroll_keys_text=self.edit_tw_scroll_keys.text(),
+            tap_keys_text=self.tw_action_key_edits["tap"].text(),
+            touch_keys_text=self.tw_action_key_edits["touch"].text(),
+            proxy_keys_text=self.tw_action_key_edits["proxy"].text(),
+        )
 
     def _run_async(
         self,
@@ -2034,12 +2085,32 @@ class MainWindow(QMainWindow):
                     self.chk_tw_divert.setChecked(bool(tw["divert"]))
                 if "invert" in tw:
                     self.chk_tw_invert.setChecked(bool(tw["invert"]))
-                self.combo_tw_scroll.setCurrentIndex(
-                    _match_thumb_scroll_preset(tw)
-                )
-                self.combo_tw_tap.setCurrentIndex(
-                    _match_thumb_tap_preset(tw.get("tap"))
-                )
+                scroll_id = match_scroll_preset(tw)
+                self._set_combo_data(self.combo_tw_scroll, scroll_id)
+                axis, mult = extract_custom_axis_fields(tw)
+                self.edit_tw_axis.setText(axis)
+                self.spin_tw_mult.setValue(float(mult))
+                interval, keys_text = extract_custom_interval_fields(tw)
+                self.spin_tw_interval.setValue(int(interval))
+                self.edit_tw_scroll_keys.setText(keys_text)
+                for field, combo in (
+                    ("tap", self.combo_tw_tap),
+                    ("touch", self.combo_tw_touch),
+                    ("proxy", self.combo_tw_proxy),
+                ):
+                    act = tw.get(field)
+                    preset_id = match_thumb_action(act)
+                    self._set_combo_data(combo, preset_id)
+                    edit = self.tw_action_key_edits.get(field)
+                    if (
+                        preset_id == ACTION_KEY_CUSTOM
+                        and isinstance(act, dict)
+                        and edit is not None
+                    ):
+                        edit.setText(
+                            format_keys_text(act.get("keys") or [])
+                        )
+                self._sync_thumb_detail_editors()
 
             configured = buttons_from_profile(profile)
             for info in REMAPPABLE_BUTTONS:

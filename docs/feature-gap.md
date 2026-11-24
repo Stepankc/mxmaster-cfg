@@ -55,9 +55,9 @@ members noted where they differ.
 |---------|--------|-------|
 | Divert / invert | **done** | |
 | Horizontal scroll (OS) | **done** | Default when divert off |
-| Left/right Axis / volume presets | **partial** | Preset combo; not free-form editor |
-| Tap action | **partial** | Presets only |
-| Touch / proxy | **missing** | Schema-ready in writer; no GUI |
+| Left/right Axis / volume presets | **done** | Presets + free-form Axis / OnInterval Keypress ([thumbwheel.md](thumbwheel.md)) |
+| Tap action | **done** | Presets + free-form Keypress; unknown → custom |
+| Touch / proxy | **done** | Same picker as tap; round-trip via CfgWriter |
 | Haptic | **impossible** | Not in logiops 0.3.5 schema |
 
 ## Buttons / remap
@@ -128,9 +128,8 @@ Device name in cfg must match logiops discovery string.
 
 1. **App-aware profiles** (post-MVP by design)
 2. **Bluetooth first-class smoke + Easy-Switch physical-channel discovery UI**
-3. **Thumb touch/proxy + free-form thumb editor**
-4. **SmartShift Enhanced / torque** on devices that support it
-5. **Flow / Actions Ring / firmware** — largely **impossible** on this stack
+3. **SmartShift Enhanced / torque** on devices that support it
+4. **Flow / Actions Ring / firmware** — largely **impossible** on this stack
 
 ## Implemented closest to Options+ scroll speed
 
