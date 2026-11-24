@@ -12,7 +12,9 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -27,6 +29,14 @@ from PySide6.QtWidgets import (
 from mxmaster_cfg.adapter.logiops_cfg import CfgWriter
 from mxmaster_cfg.adapter.logiops_dbus import CID_BACK, CID_FORWARD, CID_GESTURE
 from mxmaster_cfg.adapter.privileged import PrivilegedHelperError, apply_cfg_text, status
+from mxmaster_cfg.profiles import (
+    ProfileError,
+    delete_named_profile,
+    list_profiles,
+    load_named_profile,
+    profiles_dir,
+    save_named_profile,
+)
 
 # Remap presets for forward/back.
 REMAP_CHOICES: list[tuple[str, int, str]] = [
@@ -118,6 +128,116 @@ _DEFAULT_GESTURE_IDX = {
 }
 
 CYCLE_DPI_LIST = [400, 600, 800, 1000, 1200, 1400, 1600]
+
+
+def _norm_cid(cid: Any) -> int | None:
+    if isinstance(cid, int):
+        return cid
+    if isinstance(cid, str):
+        text = cid.strip().lower()
+        if text.startswith("0x"):
+            return int(text, 16)
+        if text.isdigit():
+            return int(text)
+    return None
+
+
+def _action_signature(action: dict[str, Any] | None) -> tuple[Any, ...]:
+    if not isinstance(action, dict):
+        return ("None",)
+    kind = action.get("type", "None")
+    keys = tuple(action.get("keys") or [])
+    dpis = tuple(action.get("dpis") or [])
+    return (kind, keys, dpis)
+
+
+def _match_gesture_preset(action: dict[str, Any] | None) -> int:
+    sig = _action_signature(action)
+    for idx, (_label, preset) in enumerate(GESTURE_PRESETS):
+        if _action_signature(preset) == sig:
+            return idx
+    return 0
+
+
+def _gesture_actions_from_profile(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for button in profile.get("buttons") or []:
+        if not isinstance(button, dict):
+            continue
+        if _norm_cid(button.get("cid")) != CID_GESTURE:
+            continue
+        action = button.get("action") or {}
+        if action.get("type") != "Gestures":
+            continue
+        for gest in action.get("gestures") or []:
+            if not isinstance(gest, dict):
+                continue
+            direction = gest.get("direction")
+            nested = gest.get("action")
+            if isinstance(direction, str) and isinstance(nested, dict):
+                out[direction] = nested
+    return out
+
+
+def _match_thumb_scroll_preset(thumb: dict[str, Any]) -> int:
+    left = thumb.get("left")
+    if not isinstance(left, dict):
+        return 0  # OS / omit
+    mode = left.get("mode")
+    axis = left.get("axis")
+    for idx, (_label, preset) in enumerate(THUMB_SCROLL_PRESETS):
+        if preset is None:
+            continue
+        if preset.get("mode") != mode:
+            continue
+        if mode == "Axis" and preset.get("axis") != axis:
+            continue
+        if mode == "OnInterval" and preset.get("mode") == "OnInterval":
+            return idx
+        if mode in {"Axis", "NoPress"}:
+            return idx
+    return 0
+
+
+def _match_thumb_tap_preset(tap: Any) -> int:
+    if not isinstance(tap, dict):
+        return 0
+    sig = _action_signature(tap)
+    for idx, (_label, preset) in enumerate(THUMB_TAP_PRESETS):
+        if preset is None:
+            continue
+        if _action_signature(preset) == sig:
+            return idx
+    return 0
+
+
+def _match_remap_preset(profile: dict[str, Any]) -> int | None:
+    """Pick remap combo index from forward/back Keypress buttons."""
+    forward_keys: list[str] | None = None
+    back_keys: list[str] | None = None
+    for button in profile.get("buttons") or []:
+        if not isinstance(button, dict):
+            continue
+        cid = _norm_cid(button.get("cid"))
+        action = button.get("action") or {}
+        if action.get("type") != "Keypress":
+            continue
+        keys = list(action.get("keys") or [])
+        if cid == CID_FORWARD:
+            forward_keys = keys
+        elif cid == CID_BACK:
+            back_keys = keys
+    if forward_keys == ["KEY_FORWARD"] and (
+        back_keys in (None, ["KEY_BACK"])
+    ):
+        return 0
+    if forward_keys == ["KEY_BACK"]:
+        return 1
+    if back_keys == ["KEY_FORWARD"]:
+        return 3
+    if back_keys == ["KEY_BACK"] and forward_keys in (None, ["KEY_FORWARD"]):
+        return 2
+    return None
 
 
 class MainWindow(QMainWindow):
@@ -324,6 +444,42 @@ class MainWindow(QMainWindow):
             gest_form.addRow(f"{labels[direction]}:", combo)
         layout.addWidget(gest_box)
 
+        # --- Named on-disk profiles (XDG) ---
+        prof_box = QGroupBox("Профили (~/.config/mxmaster-cfg/profiles/)")
+        prof_layout = QVBoxLayout(prof_box)
+        self.list_profiles = QListWidget()
+        self.list_profiles.setMinimumHeight(90)
+        self.list_profiles.itemDoubleClicked.connect(
+            lambda _item: self._on_profile_load()
+        )
+        prof_layout.addWidget(self.list_profiles)
+        prof_btns = QHBoxLayout()
+        self.btn_prof_refresh = QPushButton("Список")
+        self.btn_prof_refresh.clicked.connect(self._refresh_profile_list)
+        prof_btns.addWidget(self.btn_prof_refresh)
+        self.btn_prof_save = QPushButton("Сохранить как…")
+        self.btn_prof_save.clicked.connect(self._on_profile_save_as)
+        prof_btns.addWidget(self.btn_prof_save)
+        self.btn_prof_load = QPushButton("Загрузить")
+        self.btn_prof_load.clicked.connect(self._on_profile_load)
+        prof_btns.addWidget(self.btn_prof_load)
+        self.btn_prof_apply = QPushButton("На устройство")
+        self.btn_prof_apply.setToolTip(
+            "Применить выбранный профиль с диска (cfg + restart logid)"
+        )
+        self.btn_prof_apply.clicked.connect(self._on_profile_apply_device)
+        prof_btns.addWidget(self.btn_prof_apply)
+        self.btn_prof_delete = QPushButton("Удалить")
+        self.btn_prof_delete.clicked.connect(self._on_profile_delete)
+        prof_btns.addWidget(self.btn_prof_delete)
+        prof_btns.addStretch(1)
+        prof_layout.addLayout(prof_btns)
+        self.lbl_prof_path = QLabel(str(profiles_dir()))
+        self.lbl_prof_path.setWordWrap(True)
+        self.lbl_prof_path.setStyleSheet("color: #555;")
+        prof_layout.addWidget(self.lbl_prof_path)
+        layout.addWidget(prof_box)
+
         # --- Actions ---
         buttons = QHBoxLayout()
         self.btn_refresh = QPushButton("Обновить")
@@ -344,6 +500,7 @@ class MainWindow(QMainWindow):
         hint = QLabel(
             "Применить пишет /etc/logid.cfg через pkexec и делает "
             "systemctl restart logid (при отсутствии device — soft USB wake Bolt). "
+            "Профили — именованные YAML/JSON на диске (не app-specific). "
             "Пароль polkit спросит у Stepan."
         )
         hint.setWordWrap(True)
@@ -352,6 +509,7 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self.statusBar().showMessage("Готово — нажмите «Обновить» (pkexec)")
+        self._refresh_profile_list()
 
     def _build_profile(self) -> dict[str, Any]:
         label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]
@@ -390,7 +548,13 @@ class MainWindow(QMainWindow):
         thumbwheel = self._build_thumbwheel()
 
         return {
-            "device": {"name": "MX Master 3S"},
+            "schema_version": 1,
+            "meta": {
+                "name": "GUI current",
+                "description": "Snapshot from MX Master Config GUI",
+                "transport": "any",
+            },
+            "device": {"name": "MX Master 3S", "family": "mx-master-3s"},
             "dpi": dpi,
             "smartshift": smartshift,
             "hiresscroll": {
@@ -457,7 +621,7 @@ class MainWindow(QMainWindow):
                 self,
                 "Helper",
                 f"{exc}\n\nУстановите helper:\n"
-                "  scaffold/scripts/install-helper.sh",
+                "  scripts/install-helper.sh",
             )
             return
 
@@ -640,6 +804,159 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Применить", msg)
         self.statusBar().showMessage("Apply OK — обновляю статус…")
         self._on_refresh()
+
+    def _selected_profile_name(self) -> str | None:
+        item = self.list_profiles.currentItem()
+        if item is None:
+            return None
+        return item.text().strip() or None
+
+    def _refresh_profile_list(self) -> None:
+        current = self._selected_profile_name()
+        self.list_profiles.clear()
+        self.lbl_prof_path.setText(str(profiles_dir()))
+        for entry in list_profiles():
+            self.list_profiles.addItem(entry.name)
+        if current:
+            matches = self.list_profiles.findItems(
+                current, Qt.MatchFlag.MatchExactly
+            )
+            if matches:
+                self.list_profiles.setCurrentItem(matches[0])
+
+    def _on_profile_save_as(self) -> None:
+        suggested = self._selected_profile_name() or "mx-master-3s"
+        name, ok = QInputDialog.getText(
+            self,
+            "Сохранить профиль",
+            "Имя профиля (файл в ~/.config/mxmaster-cfg/profiles/):",
+            text=suggested,
+        )
+        if not ok:
+            return
+        try:
+            path = save_named_profile(name, self._build_profile(), fmt="yaml")
+        except ProfileError as exc:
+            QMessageBox.warning(self, "Профиль", str(exc))
+            return
+        self._refresh_profile_list()
+        matches = self.list_profiles.findItems(
+            path.stem, Qt.MatchFlag.MatchExactly
+        )
+        if matches:
+            self.list_profiles.setCurrentItem(matches[0])
+        self.statusBar().showMessage(f"Профиль сохранён: {path}")
+        QMessageBox.information(self, "Профиль", f"Сохранено:\n{path}")
+
+    def _on_profile_load(self) -> None:
+        name = self._selected_profile_name()
+        if not name:
+            QMessageBox.information(
+                self, "Профиль", "Выберите профиль в списке."
+            )
+            return
+        try:
+            profile = load_named_profile(name)
+            self._apply_profile_to_ui(profile)
+        except ProfileError as exc:
+            QMessageBox.warning(self, "Профиль", str(exc))
+            return
+        self.statusBar().showMessage(f"Загружен профиль: {name}")
+
+    def _on_profile_apply_device(self) -> None:
+        name = self._selected_profile_name()
+        if not name:
+            QMessageBox.information(
+                self, "Профиль", "Выберите профиль в списке."
+            )
+            return
+        try:
+            profile = load_named_profile(name)
+            self._apply_profile_to_ui(profile)
+        except ProfileError as exc:
+            QMessageBox.warning(self, "Профиль", str(exc))
+            return
+        cfg_text = CfgWriter(profile).render()
+        try:
+            result = apply_cfg_text(cfg_text)
+        except PrivilegedHelperError as exc:
+            QMessageBox.warning(self, "На устройство", str(exc))
+            self.statusBar().showMessage("Profile apply failed")
+            return
+        QMessageBox.information(
+            self,
+            "На устройство",
+            f"Профиль «{name}» применён.\n"
+            f"Записано {result.get('wrote')}\n"
+            f"devices: {result.get('devices') or []}",
+        )
+        self.statusBar().showMessage(f"Профиль «{name}» → устройство OK")
+        self._on_refresh()
+
+    def _on_profile_delete(self) -> None:
+        name = self._selected_profile_name()
+        if not name:
+            QMessageBox.information(
+                self, "Профиль", "Выберите профиль в списке."
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Удалить профиль",
+            f"Удалить «{name}» с диска?",
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            delete_named_profile(name)
+        except ProfileError as exc:
+            QMessageBox.warning(self, "Профиль", str(exc))
+            return
+        self._refresh_profile_list()
+        self.statusBar().showMessage(f"Удалён профиль: {name}")
+
+    def _apply_profile_to_ui(self, profile: dict[str, Any]) -> None:
+        if profile.get("dpi") is not None:
+            self.spin_dpi.setValue(int(profile["dpi"]))
+
+        ss = profile.get("smartshift") or {}
+        if isinstance(ss, dict):
+            if "on" in ss:
+                self.chk_ss_on.setChecked(bool(ss["on"]))
+            if ss.get("threshold") is not None:
+                self.spin_ss_threshold.setValue(int(ss["threshold"]))
+            if ss.get("torque") is not None and self.spin_ss_torque.isEnabled():
+                self.spin_ss_torque.setValue(int(ss["torque"]))
+
+        hr = profile.get("hiresscroll") or {}
+        if isinstance(hr, dict):
+            if "hires" in hr:
+                self.chk_hr_hires.setChecked(bool(hr["hires"]))
+            if "invert" in hr:
+                self.chk_hr_invert.setChecked(bool(hr["invert"]))
+            if "target" in hr:
+                self.chk_hr_target.setChecked(bool(hr["target"]))
+
+        tw = profile.get("thumbwheel") or {}
+        if isinstance(tw, dict):
+            if "divert" in tw:
+                self.chk_tw_divert.setChecked(bool(tw["divert"]))
+            if "invert" in tw:
+                self.chk_tw_invert.setChecked(bool(tw["invert"]))
+            self.combo_tw_scroll.setCurrentIndex(
+                _match_thumb_scroll_preset(tw)
+            )
+            self.combo_tw_tap.setCurrentIndex(_match_thumb_tap_preset(tw.get("tap")))
+
+        for direction, action in _gesture_actions_from_profile(profile).items():
+            if direction in self.gesture_combos:
+                self.gesture_combos[direction].setCurrentIndex(
+                    _match_gesture_preset(action)
+                )
+
+        remap_idx = _match_remap_preset(profile)
+        if remap_idx is not None:
+            self.combo_remap.setCurrentIndex(remap_idx)
 
     def _on_check_conflict(self) -> None:
         import subprocess

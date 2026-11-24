@@ -20,10 +20,30 @@ import yaml
 DEFAULT_LOGID_CFG = Path("/etc/logid.cfg")
 
 
+def _fix_yaml_bool_keys(obj: Any) -> Any:
+    """YAML 1.1 turns bare ``on``/``off``/``yes``/``no`` into bool keys.
+
+    Our schema uses the string key ``on`` under ``smartshift``. Normalize after
+    ``safe_load`` so quoted and unquoted sources behave the same.
+    """
+    if isinstance(obj, list):
+        return [_fix_yaml_bool_keys(x) for x in obj]
+    if not isinstance(obj, dict):
+        return obj
+    out: dict[str, Any] = {}
+    for key, value in obj.items():
+        if key is True:
+            key = "on"
+        elif key is False:
+            key = "off"
+        out[key] = _fix_yaml_bool_keys(value)
+    return out
+
+
 def load_profile(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() in {".yaml", ".yml"}:
-        data = yaml.safe_load(text)
+        data = _fix_yaml_bool_keys(yaml.safe_load(text))
     elif path.suffix.lower() == ".json":
         data = json.loads(text)
     else:
