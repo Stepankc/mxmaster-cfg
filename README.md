@@ -31,7 +31,9 @@ button remap, and gesture button (CID `0xc3`).
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, left/right/tap presets
 - **Battery** % + charging (Unified Battery `0x1004` via short hidraw probe;
   UPower/sysfs when the kernel exposes it; logiops 0.3.5 D-Bus has no Battery)
-- Forward/Back **remap** and **gesture** presets (persist via `/etc/logid.cfg` + `logid` restart)
+- **Full button remap** for all remappable CIDs (`0x52`…`0xd7`) + **gesture**
+  directions on `0xc3` (persist via `/etc/logid.cfg` + `logid` restart) —
+  [docs/buttons.md](docs/buttons.md)
 - **Named on-disk profiles** (YAML/JSON) under `~/.config/mxmaster-cfg/profiles/` —
   list / Save as / Load / Apply to device / Delete (not app-specific)
 - **Desktop launcher** — Application Menu entry (`.deb` or
@@ -115,6 +117,7 @@ not “any nonzero = on”. See [docs/smartshift.md](docs/smartshift.md).
 | Feature gap | [docs/feature-gap.md](docs/feature-gap.md) | [docs/feature-gap.ru.md](docs/feature-gap.ru.md) |
 | Thumb wheel | [docs/thumbwheel.md](docs/thumbwheel.md) | [docs/thumbwheel.ru.md](docs/thumbwheel.ru.md) |
 | Battery | [docs/battery.md](docs/battery.md) | [docs/battery.ru.md](docs/battery.ru.md) |
+| Button remap | [docs/buttons.md](docs/buttons.md) | [docs/buttons.ru.md](docs/buttons.ru.md) |
 | Gestures | [docs/gestures.md](docs/gestures.md) | [docs/gestures.ru.md](docs/gestures.ru.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) | [CONTRIBUTING.ru.md](CONTRIBUTING.ru.md) |
 

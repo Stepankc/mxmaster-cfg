@@ -30,7 +30,19 @@ from PySide6.QtWidgets import (
 )
 
 from mxmaster_cfg.adapter.logiops_cfg import CfgWriter
-from mxmaster_cfg.adapter.logiops_dbus import CID_BACK, CID_FORWARD, CID_GESTURE
+from mxmaster_cfg.adapter.logiops_dbus import CID_GESTURE
+from mxmaster_cfg.buttons import (
+    ACTION_DEFAULT,
+    ACTION_GESTURES,
+    BUTTON_ACTION_PRESETS,
+    REMAPPABLE_BUTTONS,
+    action_signature,
+    button_label,
+    buttons_from_profile,
+    default_gesture_button_action,
+    match_button_preset,
+    preset_action,
+)
 from mxmaster_cfg.adapter.plasma_scroll import (
     SCROLL_FACTOR_DEFAULT,
     SCROLL_FACTOR_MAX,
@@ -145,14 +157,6 @@ class _ValueSlider(QWidget):
         self.lbl.setEnabled(enabled)
         super().setEnabled(enabled)
 
-# Remap presets for forward/back.
-REMAP_CHOICES: list[tuple[str, int, str]] = [
-    ("Forward → KEY_FORWARD (штатно)", CID_FORWARD, "forward"),
-    ("Forward → KEY_BACK", CID_FORWARD, "back"),
-    ("Back → KEY_BACK (штатно)", CID_BACK, "back"),
-    ("Back → KEY_FORWARD", CID_BACK, "forward"),
-]
-
 # Thumb wheel left/right gesture presets (need divert=true except "OS default").
 # Each entry: (label, gesture_dict | None). None = omit side (OS handles scroll).
 THUMB_SCROLL_PRESETS: list[tuple[str, dict[str, Any] | None]] = [
@@ -234,34 +238,10 @@ _DEFAULT_GESTURE_IDX = {
     "None": 5,  # Meta tap
 }
 
-CYCLE_DPI_LIST = [400, 600, 800, 1000, 1200, 1400, 1600]
-
-
-def _norm_cid(cid: Any) -> int | None:
-    if isinstance(cid, int):
-        return cid
-    if isinstance(cid, str):
-        text = cid.strip().lower()
-        if text.startswith("0x"):
-            return int(text, 16)
-        if text.isdigit():
-            return int(text)
-    return None
-
-
-def _action_signature(action: dict[str, Any] | None) -> tuple[Any, ...]:
-    if not isinstance(action, dict):
-        return ("None",)
-    kind = action.get("type", "None")
-    keys = tuple(action.get("keys") or [])
-    dpis = tuple(action.get("dpis") or [])
-    return (kind, keys, dpis)
-
-
 def _match_gesture_preset(action: dict[str, Any] | None) -> int:
-    sig = _action_signature(action)
+    sig = action_signature(action if isinstance(action, dict) else None)
     for idx, (_label, preset) in enumerate(GESTURE_PRESETS):
-        if _action_signature(preset) == sig:
+        if action_signature(preset) == sig:
             return idx
     return 0
 
@@ -271,7 +251,14 @@ def _gesture_actions_from_profile(profile: dict[str, Any]) -> dict[str, dict[str
     for button in profile.get("buttons") or []:
         if not isinstance(button, dict):
             continue
-        if _norm_cid(button.get("cid")) != CID_GESTURE:
+        cid_raw = button.get("cid")
+        if isinstance(cid_raw, int):
+            cid = cid_raw
+        elif isinstance(cid_raw, str) and cid_raw.lower().startswith("0x"):
+            cid = int(cid_raw, 16)
+        else:
+            continue
+        if cid != CID_GESTURE:
             continue
         action = button.get("action") or {}
         if action.get("type") != "Gestures":
@@ -327,42 +314,13 @@ def _match_thumb_scroll_preset(thumb: dict[str, Any]) -> int:
 def _match_thumb_tap_preset(tap: Any) -> int:
     if not isinstance(tap, dict):
         return 0
-    sig = _action_signature(tap)
+    sig = action_signature(tap)
     for idx, (_label, preset) in enumerate(THUMB_TAP_PRESETS):
         if preset is None:
             continue
-        if _action_signature(preset) == sig:
+        if action_signature(preset) == sig:
             return idx
     return 0
-
-
-def _match_remap_preset(profile: dict[str, Any]) -> int | None:
-    """Pick remap combo index from forward/back Keypress buttons."""
-    forward_keys: list[str] | None = None
-    back_keys: list[str] | None = None
-    for button in profile.get("buttons") or []:
-        if not isinstance(button, dict):
-            continue
-        cid = _norm_cid(button.get("cid"))
-        action = button.get("action") or {}
-        if action.get("type") != "Keypress":
-            continue
-        keys = list(action.get("keys") or [])
-        if cid == CID_FORWARD:
-            forward_keys = keys
-        elif cid == CID_BACK:
-            back_keys = keys
-    if forward_keys == ["KEY_FORWARD"] and (
-        back_keys in (None, ["KEY_BACK"])
-    ):
-        return 0
-    if forward_keys == ["KEY_BACK"]:
-        return 1
-    if back_keys == ["KEY_FORWARD"]:
-        return 3
-    if back_keys == ["KEY_BACK"] and forward_keys in (None, ["KEY_FORWARD"]):
-        return 2
-    return None
 
 
 class MainWindow(QMainWindow):
@@ -404,7 +362,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(
             QLabel(
                 "mxmaster-cfg · DPI · SmartShift · HiRes · ThumbWheel · "
-                "батарея · remap · жесты → polkit-helper → logid 0.3.5 (Bolt)."
+                "батарея · remap всех CID · жесты → polkit-helper → logid 0.3.5."
             )
         )
 
@@ -633,18 +591,42 @@ class MainWindow(QMainWindow):
         tw_form.addRow(self.lbl_tw_hint)
         layout.addWidget(tw_box)
 
-        # --- Remap ---
-        remap_box = QGroupBox("Remap Forward/Back")
+        # --- Button remaps (all remappable CIDs) ---
+        remap_box = QGroupBox("Remap кнопок (CID)")
         remap_form = QFormLayout(remap_box)
-        self.combo_remap = QComboBox()
-        for label, _cid, _preset in REMAP_CHOICES:
-            self.combo_remap.addItem(label)
-        remap_form.addRow("Кнопка:", self.combo_remap)
+        self.button_combos: dict[int, QComboBox] = {}
+        for info in REMAPPABLE_BUTTONS:
+            combo = QComboBox()
+            for preset_id, preset_label, _action in BUTTON_ACTION_PRESETS:
+                if (
+                    preset_id == ACTION_GESTURES
+                    and not info.supports_gestures
+                ):
+                    continue
+                combo.addItem(preset_label, preset_id)
+            # Select default for this button.
+            default_idx = 0
+            for i in range(combo.count()):
+                if combo.itemData(i) == info.default_preset:
+                    default_idx = i
+                    break
+            combo.setCurrentIndex(default_idx)
+            combo.currentIndexChanged.connect(self._on_button_action_changed)
+            self.button_combos[info.cid] = combo
+            remap_form.addRow(button_label(info, lang="ru") + ":", combo)
+        self.lbl_remap_hint = QLabel(
+            "По умолчанию = не писать в cfg (firmware/ОС). "
+            "Отключить = type None. Жесты — только для 0xc3. "
+            "Persist: «Применить в cfg»."
+        )
+        self.lbl_remap_hint.setWordWrap(True)
+        self.lbl_remap_hint.setStyleSheet("color: #555;")
+        remap_form.addRow(self.lbl_remap_hint)
         layout.addWidget(remap_box)
 
-        # --- Gestures ---
-        gest_box = QGroupBox("Жесты (кнопка Gesture, CID 0xc3)")
-        gest_form = QFormLayout(gest_box)
+        # --- Gestures (directions for CID 0xc3 when action = Gestures) ---
+        self.gest_box = QGroupBox("Жесты (кнопка Gesture, CID 0xc3)")
+        gest_form = QFormLayout(self.gest_box)
         self.gesture_combos: dict[str, QComboBox] = {}
         labels = {
             "Up": "Вверх",
@@ -660,7 +642,8 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(_DEFAULT_GESTURE_IDX.get(direction, 0))
             self.gesture_combos[direction] = combo
             gest_form.addRow(f"{labels[direction]}:", combo)
-        layout.addWidget(gest_box)
+        layout.addWidget(self.gest_box)
+        self._sync_gesture_box_enabled()
 
         # --- Named on-disk profiles (XDG) ---
         prof_box = QGroupBox("Профили (~/.config/mxmaster-cfg/profiles/)")
@@ -790,31 +773,70 @@ class MainWindow(QMainWindow):
         # Initial load after the window is shown (sync sliders from device once).
         QTimer.singleShot(0, lambda: self._on_refresh(sync_controls=True))
 
-    def _build_profile(self) -> dict[str, Any]:
-        label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]
-        _ = label
-        dpi = int(self.slider_dpi.value())
-        keys = ["KEY_FORWARD"] if preset == "forward" else ["KEY_BACK"]
-        other_cid = CID_BACK if cid == CID_FORWARD else CID_FORWARD
-        other_keys = ["KEY_BACK"] if other_cid == CID_BACK else ["KEY_FORWARD"]
+    def _selected_button_preset(self, cid: int) -> str:
+        combo = self.button_combos.get(cid)
+        if combo is None:
+            return ACTION_DEFAULT
+        data = combo.currentData()
+        if isinstance(data, str):
+            return data
+        return ACTION_DEFAULT
 
-        gestures: list[dict[str, Any]] = []
+    def _on_button_action_changed(self, _index: int = 0) -> None:
+        self._sync_gesture_box_enabled()
+
+    def _sync_gesture_box_enabled(self) -> None:
+        """Show direction grid only when Gesture CID uses Gestures mode."""
+        enabled = self._selected_button_preset(CID_GESTURE) == ACTION_GESTURES
+        self.gest_box.setEnabled(enabled)
+        self.gest_box.setVisible(True)
+
+    def _build_gesture_direction_actions(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
         for direction in GESTURE_DIRS:
             idx = self.gesture_combos[direction].currentIndex()
             action = dict(GESTURE_PRESETS[idx][1])
-            # Deep-ish copy for nested lists
             if "keys" in action:
                 action["keys"] = list(action["keys"])
             if "dpis" in action:
                 action["dpis"] = list(action["dpis"])
-            mode = "OnRelease"
-            gestures.append(
+            out[direction] = action
+        return out
+
+    def _build_buttons(self) -> list[dict[str, Any]]:
+        """Build profile ``buttons`` from per-CID pickers (omit Default)."""
+        buttons: list[dict[str, Any]] = []
+        for info in REMAPPABLE_BUTTONS:
+            preset_id = self._selected_button_preset(info.cid)
+            if preset_id == ACTION_DEFAULT:
+                continue
+            if preset_id == ACTION_GESTURES:
+                action = default_gesture_button_action(
+                    self._build_gesture_direction_actions()
+                )
+            elif preset_id == "key_custom":
+                combo = self.button_combos[info.cid]
+                custom = combo.property("custom_action")
+                if not isinstance(custom, dict):
+                    continue
+                action = dict(custom)
+                if "keys" in action:
+                    action["keys"] = list(action["keys"] or [])
+            else:
+                action = preset_action(preset_id)
+                if action is None:
+                    continue
+            buttons.append(
                 {
-                    "direction": direction,
-                    "mode": mode,
+                    "cid": info.cid,
+                    "label": info.key,
                     "action": action,
                 }
             )
+        return buttons
+
+    def _build_profile(self) -> dict[str, Any]:
+        dpi = int(self.slider_dpi.value())
 
         smartshift: dict[str, Any] = {
             "on": self.chk_ss_on.isChecked(),
@@ -840,21 +862,7 @@ class MainWindow(QMainWindow):
             "smartshift": smartshift,
             "hiresscroll": hiresscroll,
             "thumbwheel": thumbwheel,
-            "buttons": [
-                {
-                    "cid": CID_GESTURE,
-                    "label": "gesture",
-                    "action": {"type": "Gestures", "gestures": gestures},
-                },
-                {
-                    "cid": cid,
-                    "action": {"type": "Keypress", "keys": keys},
-                },
-                {
-                    "cid": other_cid,
-                    "action": {"type": "Keypress", "keys": other_keys},
-                },
-            ],
+            "buttons": self._build_buttons(),
         }
 
     def _scroll_multiplier(self) -> float:
@@ -1424,11 +1432,22 @@ class MainWindow(QMainWindow):
         ss = profile.get("smartshift") or {}
         hr = profile.get("hiresscroll") or {}
         tw = profile.get("thumbwheel") or {}
-        gestures = []
         buttons = profile.get("buttons") or []
-        if buttons:
-            action = (buttons[0] or {}).get("action") or {}
-            gestures = action.get("gestures") or []
+        gesture_dirs = 0
+        for button in buttons:
+            if not isinstance(button, dict):
+                continue
+            action = button.get("action") or {}
+            if action.get("type") == "Gestures":
+                gesture_dirs = len(action.get("gestures") or [])
+                break
+        remap_cids = []
+        for button in buttons:
+            if isinstance(button, dict) and button.get("cid") is not None:
+                cid = button["cid"]
+                remap_cids.append(
+                    hex(cid) if isinstance(cid, int) else str(cid)
+                )
         if profile_name:
             msg = (
                 f"Профиль «{profile_name}» применён.\n"
@@ -1447,7 +1466,8 @@ class MainWindow(QMainWindow):
                 f"target={hr.get('target')} "
                 f"mult={hr.get('scroll_multiplier', '—')}\n"
                 f"ThumbWheel: divert={tw.get('divert')} invert={tw.get('invert')}\n"
-                f"Жесты: CID 0xc3 ({len(gestures)} направлений)\n"
+                f"Remap: {', '.join(remap_cids) or '—'}"
+                f" (жесты 0xc3: {gesture_dirs} напр.)\n"
                 f"devices: {devices}\n"
                 f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
             )
@@ -1735,6 +1755,41 @@ class MainWindow(QMainWindow):
                     _match_thumb_tap_preset(tw.get("tap"))
                 )
 
+            configured = buttons_from_profile(profile)
+            for info in REMAPPABLE_BUTTONS:
+                combo = self.button_combos.get(info.cid)
+                if combo is None:
+                    continue
+                if info.cid in configured:
+                    preset_id = match_button_preset(configured[info.cid])
+                else:
+                    preset_id = ACTION_DEFAULT
+                # Unknown Keypress → show as custom row once.
+                if preset_id == "key_custom":
+                    act = configured[info.cid]
+                    keys = ",".join(act.get("keys") or [])
+                    custom_label = f"Keypress ({keys})"
+                    # Reuse existing custom item if present.
+                    found = -1
+                    for i in range(combo.count()):
+                        if combo.itemData(i) == "key_custom":
+                            found = i
+                            combo.setItemText(i, custom_label)
+                            break
+                    if found < 0:
+                        combo.addItem(custom_label, "key_custom")
+                        found = combo.count() - 1
+                    # Stash raw action on the combo for build.
+                    combo.setProperty("custom_action", act)
+                    combo.setCurrentIndex(found)
+                else:
+                    idx = 0
+                    for i in range(combo.count()):
+                        if combo.itemData(i) == preset_id:
+                            idx = i
+                            break
+                    combo.setCurrentIndex(idx)
+
             for direction, action in _gesture_actions_from_profile(
                 profile
             ).items():
@@ -1742,10 +1797,7 @@ class MainWindow(QMainWindow):
                     self.gesture_combos[direction].setCurrentIndex(
                         _match_gesture_preset(action)
                     )
-
-            remap_idx = _match_remap_preset(profile)
-            if remap_idx is not None:
-                self.combo_remap.setCurrentIndex(remap_idx)
+            self._sync_gesture_box_enabled()
         finally:
             self._suppress_live = prev
             self._live_timer.stop()

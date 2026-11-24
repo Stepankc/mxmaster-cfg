@@ -124,6 +124,7 @@
                   "Keypress",
                   "Gestures",
                   "ToggleSmartShift",
+                  "ToggleHiresScroll",
                   "CycleDPI",
                   "ChangeDPI",
                   "ChangeHost"
@@ -132,6 +133,21 @@
               "keys": {
                 "type": "array",
                 "items": { "type": "string" }
+              },
+              "dpis": {
+                "type": "array",
+                "items": { "type": "integer" }
+              },
+              "inc": {
+                "type": "integer",
+                "description": "ChangeDPI increment (can be negative)"
+              },
+              "sensor": { "type": "integer" },
+              "host": {
+                "oneOf": [
+                  { "type": "integer" },
+                  { "type": "string" }
+                ]
               },
               "gestures": {
                 "type": "array",
@@ -190,6 +206,14 @@
         "dpis": {
           "type": "array",
           "items": { "type": "integer" }
+        },
+        "inc": { "type": "integer" },
+        "sensor": { "type": "integer" },
+        "host": {
+          "oneOf": [
+            { "type": "integer" },
+            { "type": "string" }
+          ]
         }
       }
     },

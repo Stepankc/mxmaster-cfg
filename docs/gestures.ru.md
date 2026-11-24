@@ -5,7 +5,10 @@
 Кнопка жестов MX Master (CID **`0xc3`**) настраивается как действие logiops
 `Gestures` с направлениями **Up / Down / Left / Right / None** (tap).
 
-## Пресеты в GUI
+В GUI для `0xc3` выберите **«Gesture mode (направления ниже)»** в списке remap;
+пресеты направлений появятся под ним.
+
+## Пресеты направлений
 
 - Нет (None)
 - Meta + стрелки
@@ -13,14 +16,17 @@
 - **CycleDPI** (400…1600)
 - **ToggleSmartShift**
 
-Remap Forward / Back — CID `0x56` / `0x53`.
+Можно назначить `0xc3` и без жестов (Keypress, CycleDPI…) — сетка направлений
+тогда отключается.
+
+Остальные remappable CID (`0x52`, `0x53`, `0x56`, `0xc4`, `0xd7`) — тот же
+список действий: [buttons.ru.md](buttons.ru.md).
 
 ## Persist
 
 Жесты и remap уходят **только** через **cfg + restart `logid`**.
-Live `Button.SetAction` на logiops 0.3.5 для GUI ненадёжен.
 
-Пример профиля: `examples/profiles/mx-master-3s-default.yaml`.
+Пример: `examples/profiles/mx-master-3s-default.yaml`.
 
 Скриншот: `media/smartshift-gestures/main-window.png`
 

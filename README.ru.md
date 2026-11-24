@@ -31,7 +31,9 @@ remap кнопок и жесты (CID `0xc3`).
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты left/right/tap
 - **Батарея** % + зарядка (Unified Battery `0x1004` коротким hidraw-probe;
   UPower/sysfs, если ядро отдаёт; в D-Bus logiops 0.3.5 Battery нет)
-- **Remap** Forward/Back и пресеты **жестов** (persist через `/etc/logid.cfg` + restart `logid`)
+- **Полный remap** всех remappable CID (`0x52`…`0xd7`) + **жесты** на `0xc3`
+  (persist через `/etc/logid.cfg` + restart `logid`) —
+  [docs/buttons.ru.md](docs/buttons.ru.md)
 - **Именованные профили на диске** (YAML/JSON) в `~/.config/mxmaster-cfg/profiles/` —
   список / Сохранить как / Загрузить / На устройство / Удалить (не app-specific)
 - **Ярлык в меню** — Application Menu (`.deb` или
@@ -116,6 +118,7 @@ pkexec /usr/libexec/mxmaster-cfg-helper wake-receiver
 | Разрыв функций | [docs/feature-gap.md](docs/feature-gap.md) | [docs/feature-gap.ru.md](docs/feature-gap.ru.md) |
 | Thumb wheel | [docs/thumbwheel.md](docs/thumbwheel.md) | [docs/thumbwheel.ru.md](docs/thumbwheel.ru.md) |
 | Батарея | [docs/battery.md](docs/battery.md) | [docs/battery.ru.md](docs/battery.ru.md) |
+| Remap кнопок | [docs/buttons.md](docs/buttons.md) | [docs/buttons.ru.md](docs/buttons.ru.md) |
 | Жесты | [docs/gestures.md](docs/gestures.md) | [docs/gestures.ru.md](docs/gestures.ru.md) |
 | Contributing | [CONTRIBUTING.md](CONTRIBUTING.md) | [CONTRIBUTING.ru.md](CONTRIBUTING.ru.md) |
 
