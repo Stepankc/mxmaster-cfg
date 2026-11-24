@@ -33,7 +33,7 @@ button remap, and gesture button (CID `0xc3`).
   list / Save as / Load / Apply to device / Delete (not app-specific)
 - **Desktop launcher** — Application Menu entry (`.deb` or
   `scripts/install-desktop.sh` → absolute `./run.sh`)
-- Battery auto-refresh ~45 s (non-blocking; never stops `logid` on the timer)
+- **Sliders** for DPI / SmartShift (live D-Bus apply, debounced); status poll ~15 s
 - After apply with `device_count: 0` — soft USB wake + GUI poll; **Wake receiver**
   button
 - Bolt quirk hint (“wiggle the mouse”) when devices disappear after restart

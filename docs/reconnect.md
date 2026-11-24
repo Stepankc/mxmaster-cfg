@@ -13,8 +13,8 @@ If `device_count` is still **0**:
    then the same poll continues.
 
 When the device reappears, the status line is cleared/updated and the form
-refreshes. Battery % also auto-refreshes about every **45 s** via a
-non-blocking `get-battery --no-hidpp-stop` (never stops `logid` on the timer).
+refreshes. Device/battery status keeps polling about every **15 s** (slider
+positions are left alone). DPI / SmartShift sliders push live over D-Bus.
 
 Helper calls run in a plain Python thread; results are applied on the GUI
 thread via a queue + `QTimer` (not `QThread`+`Signal→lambda`, which can

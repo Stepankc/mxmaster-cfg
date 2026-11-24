@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
+    QSlider,
     QStatusBar,
     QVBoxLayout,
     QWidget,
@@ -33,7 +33,8 @@ from mxmaster_cfg.adapter.logiops_dbus import CID_BACK, CID_FORWARD, CID_GESTURE
 from mxmaster_cfg.adapter.privileged import (
     PrivilegedHelperError,
     apply_cfg_text,
-    get_battery,
+    set_dpi,
+    set_smartshift,
     status,
     wake_receiver,
 )
@@ -46,13 +47,72 @@ from mxmaster_cfg.profiles import (
     save_named_profile,
 )
 
-# Battery auto-refresh interval (non-blocking; coexist-only HID++ probe).
-BATTERY_REFRESH_MS = 45_000
+# Live status poll (device + battery); does not overwrite slider positions.
+STATUS_POLL_MS = 15_000
+# Debounce live D-Bus apply after slider / checkbox changes.
+LIVE_DEBOUNCE_MS = 450
 # After apply-cfg with device_count=0, poll until Bolt reappears.
 RECONNECT_POLL_MS = 2_000
 RECONNECT_MAX_POLLS = 30  # ~60 s
 # Drain worker results on the GUI thread (never touch QWidgets from workers).
 _ASYNC_PUMP_MS = 50
+DPI_STEP = 50
+
+
+class _ValueSlider(QWidget):
+    """Horizontal slider with a live numeric label (no spinbox)."""
+
+    def __init__(
+        self,
+        minimum: int,
+        maximum: int,
+        value: int,
+        *,
+        step: int = 1,
+        suffix: str = "",
+    ) -> None:
+        super().__init__()
+        self._step = max(1, int(step))
+        self._suffix = suffix
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(int(minimum), int(maximum))
+        self.slider.setSingleStep(self._step)
+        self.slider.setPageStep(max(self._step, (maximum - minimum) // 20))
+        self.slider.setTickPosition(QSlider.TickPosition.NoTicks)
+        self.lbl = QLabel()
+        self.lbl.setMinimumWidth(56)
+        self.lbl.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        layout.addWidget(self.slider, stretch=1)
+        layout.addWidget(self.lbl)
+        self.slider.valueChanged.connect(self._sync_label)
+        self.setValue(value)
+
+    def _snap(self, value: int) -> int:
+        step = self._step
+        snapped = int(round(value / step) * step)
+        return max(self.slider.minimum(), min(self.slider.maximum(), snapped))
+
+    def _sync_label(self, value: int) -> None:
+        self.lbl.setText("%s%s" % (self._snap(value), self._suffix))
+
+    def value(self) -> int:
+        return self._snap(int(self.slider.value()))
+
+    def setValue(self, value: int) -> None:
+        snapped = self._snap(int(value))
+        blocked = self.slider.blockSignals(True)
+        self.slider.setValue(snapped)
+        self.slider.blockSignals(blocked)
+        self._sync_label(snapped)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: A003 — Qt API
+        self.slider.setEnabled(enabled)
+        self.lbl.setEnabled(enabled)
+        super().setEnabled(enabled)
 
 # Remap presets for forward/back.
 REMAP_CHOICES: list[tuple[str, int, str]] = [
@@ -263,6 +323,8 @@ class MainWindow(QMainWindow):
         self.resize(720, 800)
         self._last_status: dict[str, Any] = {}
         self._async_busy = False
+        self._suppress_live = False
+        self._initial_sync_done = False
         # Worker threads only put into this queue; a GUI-thread QTimer drains it.
         # (QThread + Signal→lambda was DirectConnection and crashed PySide6/3.14
         # in QFontEngineFT when Refresh updated labels off-thread.)
@@ -326,6 +388,14 @@ class MainWindow(QMainWindow):
         status_form.addRow("ProductID:", self.lbl_pid)
         status_form.addRow("Батарея:", self.lbl_battery)
         status_form.addRow("Статус:", self.lbl_quirk)
+        self.btn_reread = QPushButton("Перечитать")
+        self.btn_reread.setFlat(True)
+        self.btn_reread.setToolTip(
+            "Разово перечитать устройство и подтянуть слайдеры "
+            "(обычно не нужно — статус обновляется сам)."
+        )
+        self.btn_reread.clicked.connect(lambda: self._on_refresh(sync_controls=True))
+        status_form.addRow("", self.btn_reread)
         status_box.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
         )
@@ -334,11 +404,11 @@ class MainWindow(QMainWindow):
         # --- DPI ---
         dpi_box = QGroupBox("DPI")
         dpi_form = QFormLayout(dpi_box)
-        self.spin_dpi = QSpinBox()
-        self.spin_dpi.setRange(200, 8000)
-        self.spin_dpi.setSingleStep(50)
-        self.spin_dpi.setValue(1000)
-        dpi_form.addRow("Целевой DPI:", self.spin_dpi)
+        self.slider_dpi = _ValueSlider(200, 8000, 1000, step=DPI_STEP)
+        self.slider_dpi.setToolTip(
+            "Живой SetDPI по D-Bus (с задержкой). «Применить» пишет в cfg."
+        )
+        dpi_form.addRow("Целевой DPI:", self.slider_dpi)
         layout.addWidget(dpi_box)
 
         # --- SmartShift ---
@@ -348,25 +418,24 @@ class MainWindow(QMainWindow):
         self.chk_ss_on.setChecked(True)
         self.chk_ss_on.setToolTip(
             "logiops GetConfig: mode 2=on, 1=off, 0=unset. "
-            "Снятие галочки пишет on:false (не clear)."
+            "Снятие галочки пишет on:false (не clear). Live D-Bus + cfg."
         )
         self.lbl_ss_state = QLabel("состояние: —")
         self.lbl_ss_state.setStyleSheet("color: #555;")
-        self.spin_ss_threshold = QSpinBox()
-        self.spin_ss_threshold.setRange(1, 50)
-        self.spin_ss_threshold.setValue(30)
-        self.spin_ss_torque = QSpinBox()
-        self.spin_ss_torque.setRange(0, 100)
-        self.spin_ss_torque.setValue(50)
-        self.spin_ss_torque.setEnabled(False)
+        self.slider_ss_threshold = _ValueSlider(1, 50, 30, step=1)
+        self.slider_ss_threshold.setToolTip(
+            "SmartShift threshold — live SetConfig, затем «Применить» в cfg."
+        )
+        self.slider_ss_torque = _ValueSlider(0, 100, 50, step=1)
+        self.slider_ss_torque.setEnabled(False)
         self.lbl_ss_torque_hint = QLabel(
             "TorqueSupport=false на MX Master 3S — крутящий момент в cfg не пишем."
         )
         self.lbl_ss_torque_hint.setWordWrap(True)
         ss_form.addRow(self.chk_ss_on)
         ss_form.addRow("D-Bus:", self.lbl_ss_state)
-        ss_form.addRow("Threshold:", self.spin_ss_threshold)
-        ss_form.addRow("Torque:", self.spin_ss_torque)
+        ss_form.addRow("Threshold:", self.slider_ss_threshold)
+        ss_form.addRow("Torque:", self.slider_ss_torque)
         ss_form.addRow(self.lbl_ss_torque_hint)
         layout.addWidget(ss_box)
 
@@ -511,12 +580,12 @@ class MainWindow(QMainWindow):
 
         # --- Actions ---
         buttons = QHBoxLayout()
-        self.btn_refresh = QPushButton("Обновить")
-        self.btn_refresh.clicked.connect(self._on_refresh)
-        buttons.addWidget(self.btn_refresh)
-
-        self.btn_apply = QPushButton("Применить")
+        self.btn_apply = QPushButton("Применить в cfg")
         self.btn_apply.setDefault(True)
+        self.btn_apply.setToolTip(
+            "Записать полный профиль в /etc/logid.cfg и restart logid "
+            "(жесты, remap, hi-res, thumb). DPI/SmartShift уже уходят live."
+        )
         self.btn_apply.clicked.connect(self._on_apply)
         buttons.addWidget(self.btn_apply)
 
@@ -535,10 +604,10 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
 
         hint = QLabel(
-            "Применить пишет /etc/logid.cfg через pkexec и делает "
-            "systemctl restart logid (при отсутствии device — soft USB wake "
-            "Bolt + опрос). Батарея обновляется ~каждые 45 с без блокировки UI. "
-            "Профили — именованные YAML/JSON на диске (не app-specific)."
+            "Слайдеры DPI / SmartShift применяются live по D-Bus (с короткой "
+            "задержкой). «Применить в cfg» нужно для жестов, remap, hi-res и "
+            "thumb (restart logid). Статус и батарея обновляются сами ~каждые "
+            "15 с. Профили — YAML/JSON на диске (не app-specific)."
         )
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -548,10 +617,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Загрузка устройства… (pkexec)")
         self._refresh_profile_list()
 
-        self._battery_timer = QTimer(self)
-        self._battery_timer.setInterval(BATTERY_REFRESH_MS)
-        self._battery_timer.timeout.connect(self._on_battery_tick)
-        self._battery_timer.start()
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(STATUS_POLL_MS)
+        self._status_timer.timeout.connect(self._on_status_poll)
+        self._status_timer.start()
 
         self._reconnect_timer = QTimer(self)
         self._reconnect_timer.setInterval(RECONNECT_POLL_MS)
@@ -562,13 +631,36 @@ class MainWindow(QMainWindow):
         self._async_pump.timeout.connect(self._drain_async_queue)
         self._async_pump.start()
 
-        # Initial load after the window is shown (same safe queue path as «Обновить»).
-        QTimer.singleShot(0, self._on_refresh)
+        self._live_timer = QTimer(self)
+        self._live_timer.setSingleShot(True)
+        self._live_timer.setInterval(LIVE_DEBOUNCE_MS)
+        self._live_timer.timeout.connect(self._on_live_apply)
+
+        self.slider_dpi.slider.sliderReleased.connect(self._schedule_live_apply)
+        self.slider_dpi.slider.valueChanged.connect(
+            lambda _v: self._schedule_live_apply()
+        )
+        self.slider_ss_threshold.slider.sliderReleased.connect(
+            self._schedule_live_apply
+        )
+        self.slider_ss_threshold.slider.valueChanged.connect(
+            lambda _v: self._schedule_live_apply()
+        )
+        self.slider_ss_torque.slider.sliderReleased.connect(
+            self._schedule_live_apply
+        )
+        self.slider_ss_torque.slider.valueChanged.connect(
+            lambda _v: self._schedule_live_apply()
+        )
+        self.chk_ss_on.toggled.connect(lambda _v: self._schedule_live_apply())
+
+        # Initial load after the window is shown (sync sliders from device once).
+        QTimer.singleShot(0, lambda: self._on_refresh(sync_controls=True))
 
     def _build_profile(self) -> dict[str, Any]:
         label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]
         _ = label
-        dpi = int(self.spin_dpi.value())
+        dpi = int(self.slider_dpi.value())
         keys = ["KEY_FORWARD"] if preset == "forward" else ["KEY_BACK"]
         other_cid = CID_BACK if cid == CID_FORWARD else CID_FORWARD
         other_keys = ["KEY_BACK"] if other_cid == CID_BACK else ["KEY_FORWARD"]
@@ -593,11 +685,11 @@ class MainWindow(QMainWindow):
 
         smartshift: dict[str, Any] = {
             "on": self.chk_ss_on.isChecked(),
-            "threshold": int(self.spin_ss_threshold.value()),
+            "threshold": int(self.slider_ss_threshold.value()),
         }
-        # Only emit torque when device reports support (or user enabled spin).
-        if self.spin_ss_torque.isEnabled():
-            smartshift["torque"] = int(self.spin_ss_torque.value())
+        # Only emit torque when device reports support.
+        if self.slider_ss_torque.isEnabled():
+            smartshift["torque"] = int(self.slider_ss_torque.value())
 
         thumbwheel = self._build_thumbwheel()
 
@@ -718,14 +810,78 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage("Ошибка: %s" % value)
 
-    def _on_refresh(self) -> None:
+    def _on_refresh(self, *, sync_controls: bool = True) -> None:
+        def _ok(data: dict[str, Any]) -> None:
+            self._apply_status_data(data, sync_controls=sync_controls)
+
         if not self._run_async(
             status,
-            self._apply_status_data,
+            _ok,
             on_err=self._on_refresh_error,
             busy_message="Обновление… (pkexec)",
         ):
             self.statusBar().showMessage("Уже выполняется запрос к helper…")
+
+    def _on_status_poll(self) -> None:
+        """Periodic live status: labels/battery only (keep user slider edits)."""
+        if self._async_busy or self._reconnect_active:
+            return
+        if self.slider_dpi.slider.isSliderDown():
+            return
+        if self.slider_ss_threshold.slider.isSliderDown():
+            return
+        if self.slider_ss_torque.slider.isSliderDown():
+            return
+
+        def _ok(data: dict[str, Any]) -> None:
+            self._apply_status_data(data, sync_controls=False)
+
+        def _err(_exc: BaseException) -> None:
+            return
+
+        self._run_async(status, _ok, on_err=_err)
+
+    def _schedule_live_apply(self) -> None:
+        if self._suppress_live or not self._initial_sync_done:
+            return
+        self._live_timer.start()
+
+    def _on_live_apply(self) -> None:
+        """Debounced live DPI + SmartShift via D-Bus (no logid restart)."""
+        if self._suppress_live or self._async_busy:
+            return
+        dpi = int(self.slider_dpi.value())
+        on = self.chk_ss_on.isChecked()
+        threshold = int(self.slider_ss_threshold.value())
+        torque_enabled = self.slider_ss_torque.isEnabled()
+        torque = int(self.slider_ss_torque.value()) if torque_enabled else None
+
+        def _do() -> dict[str, Any]:
+            out: dict[str, Any] = {"dpi": set_dpi(dpi)}
+            ss_kwargs: dict[str, Any] = {"on": on, "threshold": threshold}
+            if torque is not None:
+                ss_kwargs["torque"] = torque
+            out["smartshift"] = set_smartshift(**ss_kwargs)
+            return out
+
+        def _ok(result: dict[str, Any]) -> None:
+            self.statusBar().showMessage(
+                "Live: DPI %s · SmartShift on=%s threshold=%s"
+                % (dpi, on, threshold)
+            )
+            _ = result
+
+        def _err(exc: BaseException) -> None:
+            self.statusBar().showMessage("Live apply: %s" % exc)
+
+        if not self._run_async(
+            _do,
+            _ok,
+            on_err=_err,
+            busy_message="Live DPI/SmartShift…",
+        ):
+            # Retry shortly if another helper call is in flight.
+            self._live_timer.start()
 
     def _on_refresh_error(self, exc: BaseException) -> None:
         self.lbl_quirk.setText(str(exc))
@@ -739,7 +895,11 @@ class MainWindow(QMainWindow):
             )
 
     def _apply_status_data(
-        self, data: dict[str, Any], *, clear_reconnect: bool = True
+        self,
+        data: dict[str, Any],
+        *,
+        clear_reconnect: bool = True,
+        sync_controls: bool = True,
     ) -> None:
         self._last_status = data
         devices = data.get("devices") or []
@@ -767,7 +927,6 @@ class MainWindow(QMainWindow):
         self.lbl_pid.setText(str(pid) if pid is not None else "—")
         self._apply_battery_label(dev)
         if dev.get("dpi") is not None:
-            self.spin_dpi.setValue(int(dev["dpi"]))
             self.lbl_quirk.setText(data.get("quirk") or "OK")
         else:
             msg = dev.get("dpi_error") or data.get("quirk") or "DPI недоступен"
@@ -775,47 +934,67 @@ class MainWindow(QMainWindow):
 
         ss = dev.get("smartshift")
         torque_support = bool(dev.get("smartshift_torque_support"))
-        self.spin_ss_torque.setEnabled(torque_support)
+        self.slider_ss_torque.setEnabled(torque_support)
         if torque_support:
             self.lbl_ss_torque_hint.setText(
-                "Torque поддерживается — значение уйдёт в cfg."
+                "Torque поддерживается — live + cfg."
             )
         else:
             self.lbl_ss_torque_hint.setText(
                 "TorqueSupport=false на этом устройстве — torque в cfg не пишем."
             )
+
+        prev_suppress = self._suppress_live
+        self._suppress_live = True
+        try:
+            if sync_controls:
+                if dev.get("dpi") is not None:
+                    self.slider_dpi.setValue(int(dev["dpi"]))
+                if isinstance(ss, dict):
+                    mode = int(ss.get("mode", 0) or 0)
+                    if mode == 2:
+                        self.chk_ss_on.setChecked(True)
+                    elif mode == 1:
+                        self.chk_ss_on.setChecked(False)
+                    if ss.get("threshold") is not None:
+                        self.slider_ss_threshold.setValue(int(ss["threshold"]))
+                    if torque_support and ss.get("torque") is not None:
+                        self.slider_ss_torque.setValue(int(ss["torque"]))
+
+                hs = dev.get("hiresscroll")
+                if isinstance(hs, dict):
+                    self.chk_hr_hires.setChecked(bool(hs.get("hires", True)))
+                    self.chk_hr_invert.setChecked(bool(hs.get("invert", False)))
+                    self.chk_hr_target.setChecked(bool(hs.get("target", False)))
+
+                tw = dev.get("thumbwheel")
+                if isinstance(tw, dict):
+                    self.chk_tw_divert.setChecked(bool(tw.get("divert", False)))
+                    self.chk_tw_invert.setChecked(bool(tw.get("invert", False)))
+        finally:
+            self._suppress_live = prev_suppress
+            if sync_controls:
+                self._initial_sync_done = True
+                self._live_timer.stop()
+
         if isinstance(ss, dict):
-            # GetConfig tri-state: 2=on, 1=off, 0=unset — never treat 1 as on.
             mode = int(ss.get("mode", 0) or 0)
             on_state = ss.get("on_state")
             if on_state is None:
                 on_state = {2: "on", 1: "off"}.get(mode, "unset")
-            self.lbl_ss_state.setText(
-                "mode=%s (%s)" % (mode, on_state)
-            )
-            if mode == 2:
-                self.chk_ss_on.setChecked(True)
-            elif mode == 1:
-                self.chk_ss_on.setChecked(False)
-            # mode 0 (unset): leave checkbox as-is / default on for apply
-            if ss.get("threshold") is not None:
-                self.spin_ss_threshold.setValue(int(ss["threshold"]))
-            if torque_support and ss.get("torque") is not None:
-                self.spin_ss_torque.setValue(int(ss["torque"]))
+            self.lbl_ss_state.setText("mode=%s (%s)" % (mode, on_state))
         else:
             self.lbl_ss_state.setText("состояние: н/д")
 
         hs = dev.get("hiresscroll")
         if isinstance(hs, dict):
-            hires = bool(hs.get("hires", True))
-            invert = bool(hs.get("invert", False))
-            target = bool(hs.get("target", False))
-            self.chk_hr_hires.setChecked(hires)
-            self.chk_hr_invert.setChecked(invert)
-            self.chk_hr_target.setChecked(target)
             self.lbl_hr_state.setText(
                 "bbb hires=%s invert=%s target=%s"
-                % (hires, invert, target)
+                % (
+                    bool(hs.get("hires", True)),
+                    bool(hs.get("invert", False)),
+                    bool(hs.get("target", False)),
+                )
             )
         else:
             err = dev.get("hiresscroll_error") or "н/д"
@@ -823,12 +1002,12 @@ class MainWindow(QMainWindow):
 
         tw = dev.get("thumbwheel")
         if isinstance(tw, dict):
-            divert = bool(tw.get("divert", False))
-            invert_tw = bool(tw.get("invert", False))
-            self.chk_tw_divert.setChecked(divert)
-            self.chk_tw_invert.setChecked(invert_tw)
             self.lbl_tw_state.setText(
-                "bb divert=%s invert=%s" % (divert, invert_tw)
+                "bb divert=%s invert=%s"
+                % (
+                    bool(tw.get("divert", False)),
+                    bool(tw.get("invert", False)),
+                )
             )
         else:
             err = dev.get("thumbwheel_error") or "н/д"
@@ -962,7 +1141,7 @@ class MainWindow(QMainWindow):
         if devices:
             self._stop_reconnect(clear_message=False)
             self.statusBar().showMessage("Apply OK — обновляю статус…")
-            self._on_refresh()
+            self._on_refresh(sync_controls=True)
         else:
             self.statusBar().showMessage(
                 "Apply OK, devices=0 — опрос Bolt / soft wake…"
@@ -1007,7 +1186,9 @@ class MainWindow(QMainWindow):
             devices = data.get("devices") or []
             if devices:
                 self._stop_reconnect(clear_message=True)
-                self._apply_status_data(data, clear_reconnect=False)
+                self._apply_status_data(
+                    data, clear_reconnect=False, sync_controls=True
+                )
                 self.statusBar().showMessage(
                     "Устройство снова на связи · devices=%s"
                     % data.get("device_count")
@@ -1026,33 +1207,6 @@ class MainWindow(QMainWindow):
 
         self._run_async(status, _ok, on_err=_err)
 
-    def _on_battery_tick(self) -> None:
-        if self._async_busy or self._reconnect_active:
-            return
-        devices = (self._last_status or {}).get("devices") or []
-        if not devices:
-            return
-
-        def _ok(data: dict[str, Any]) -> None:
-            # Lightweight: only refresh battery row.
-            self._apply_battery_label(
-                {
-                    "battery": data.get("battery"),
-                    "battery_available": data.get("battery_available"),
-                    "battery_error": data.get("battery_error"),
-                }
-            )
-
-        def _err(_exc: BaseException) -> None:
-            # Silent on timer — avoid dialog spam.
-            return
-
-        self._run_async(
-            lambda: get_battery(allow_stop_logid=False),
-            _ok,
-            on_err=_err,
-        )
-
     def _on_wake_receiver(self) -> None:
         def _ok(data: dict[str, Any]) -> None:
             devices = data.get("devices") or []
@@ -1062,7 +1216,7 @@ class MainWindow(QMainWindow):
                     "Ресивер разбужен · devices=%s — обновляю…"
                     % data.get("device_count")
                 )
-                self._on_refresh()
+                self._on_refresh(sync_controls=True)
             else:
                 quirk = data.get("quirk") or "devices=0"
                 self.lbl_quirk.setText(str(quirk))
@@ -1202,47 +1356,62 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Удалён профиль: {name}")
 
     def _apply_profile_to_ui(self, profile: dict[str, Any]) -> None:
-        if profile.get("dpi") is not None:
-            self.spin_dpi.setValue(int(profile["dpi"]))
+        prev = self._suppress_live
+        self._suppress_live = True
+        try:
+            if profile.get("dpi") is not None:
+                self.slider_dpi.setValue(int(profile["dpi"]))
 
-        ss = profile.get("smartshift") or {}
-        if isinstance(ss, dict):
-            if "on" in ss:
-                self.chk_ss_on.setChecked(bool(ss["on"]))
-            if ss.get("threshold") is not None:
-                self.spin_ss_threshold.setValue(int(ss["threshold"]))
-            if ss.get("torque") is not None and self.spin_ss_torque.isEnabled():
-                self.spin_ss_torque.setValue(int(ss["torque"]))
+            ss = profile.get("smartshift") or {}
+            if isinstance(ss, dict):
+                if "on" in ss:
+                    self.chk_ss_on.setChecked(bool(ss["on"]))
+                if ss.get("threshold") is not None:
+                    self.slider_ss_threshold.setValue(int(ss["threshold"]))
+                if (
+                    ss.get("torque") is not None
+                    and self.slider_ss_torque.isEnabled()
+                ):
+                    self.slider_ss_torque.setValue(int(ss["torque"]))
 
-        hr = profile.get("hiresscroll") or {}
-        if isinstance(hr, dict):
-            if "hires" in hr:
-                self.chk_hr_hires.setChecked(bool(hr["hires"]))
-            if "invert" in hr:
-                self.chk_hr_invert.setChecked(bool(hr["invert"]))
-            if "target" in hr:
-                self.chk_hr_target.setChecked(bool(hr["target"]))
+            hr = profile.get("hiresscroll") or {}
+            if isinstance(hr, dict):
+                if "hires" in hr:
+                    self.chk_hr_hires.setChecked(bool(hr["hires"]))
+                if "invert" in hr:
+                    self.chk_hr_invert.setChecked(bool(hr["invert"]))
+                if "target" in hr:
+                    self.chk_hr_target.setChecked(bool(hr["target"]))
 
-        tw = profile.get("thumbwheel") or {}
-        if isinstance(tw, dict):
-            if "divert" in tw:
-                self.chk_tw_divert.setChecked(bool(tw["divert"]))
-            if "invert" in tw:
-                self.chk_tw_invert.setChecked(bool(tw["invert"]))
-            self.combo_tw_scroll.setCurrentIndex(
-                _match_thumb_scroll_preset(tw)
-            )
-            self.combo_tw_tap.setCurrentIndex(_match_thumb_tap_preset(tw.get("tap")))
-
-        for direction, action in _gesture_actions_from_profile(profile).items():
-            if direction in self.gesture_combos:
-                self.gesture_combos[direction].setCurrentIndex(
-                    _match_gesture_preset(action)
+            tw = profile.get("thumbwheel") or {}
+            if isinstance(tw, dict):
+                if "divert" in tw:
+                    self.chk_tw_divert.setChecked(bool(tw["divert"]))
+                if "invert" in tw:
+                    self.chk_tw_invert.setChecked(bool(tw["invert"]))
+                self.combo_tw_scroll.setCurrentIndex(
+                    _match_thumb_scroll_preset(tw)
+                )
+                self.combo_tw_tap.setCurrentIndex(
+                    _match_thumb_tap_preset(tw.get("tap"))
                 )
 
-        remap_idx = _match_remap_preset(profile)
-        if remap_idx is not None:
-            self.combo_remap.setCurrentIndex(remap_idx)
+            for direction, action in _gesture_actions_from_profile(
+                profile
+            ).items():
+                if direction in self.gesture_combos:
+                    self.gesture_combos[direction].setCurrentIndex(
+                        _match_gesture_preset(action)
+                    )
+
+            remap_idx = _match_remap_preset(profile)
+            if remap_idx is not None:
+                self.combo_remap.setCurrentIndex(remap_idx)
+        finally:
+            self._suppress_live = prev
+            self._live_timer.stop()
+            if self._initial_sync_done:
+                self._schedule_live_apply()
 
     def _on_check_conflict(self) -> None:
         import subprocess
