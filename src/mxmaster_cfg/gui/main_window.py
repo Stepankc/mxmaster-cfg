@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import threading
+from queue import Empty, SimpleQueue
 from typing import Any, Callable
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -49,22 +51,8 @@ BATTERY_REFRESH_MS = 45_000
 # After apply-cfg with device_count=0, poll until Bolt reappears.
 RECONNECT_POLL_MS = 2_000
 RECONNECT_MAX_POLLS = 30  # ~60 s
-
-
-class _FnWorker(QObject):
-    """Run a callable off the GUI thread; emit result or exception."""
-
-    finished = Signal(object)
-
-    def __init__(self, fn: Callable[[], Any]) -> None:
-        super().__init__()
-        self._fn = fn
-
-    def run(self) -> None:
-        try:
-            self.finished.emit(("ok", self._fn()))
-        except BaseException as exc:  # noqa: BLE001 — marshal to GUI
-            self.finished.emit(("err", exc))
+# Drain worker results on the GUI thread (never touch QWidgets from workers).
+_ASYNC_PUMP_MS = 50
 
 # Remap presets for forward/back.
 REMAP_CHOICES: list[tuple[str, int, str]] = [
@@ -275,8 +263,16 @@ class MainWindow(QMainWindow):
         self.resize(720, 800)
         self._last_status: dict[str, Any] = {}
         self._async_busy = False
-        self._async_thread: QThread | None = None
-        self._async_worker: _FnWorker | None = None
+        # Worker threads only put into this queue; a GUI-thread QTimer drains it.
+        # (QThread + Signal→lambda was DirectConnection and crashed PySide6/3.14
+        # in QFontEngineFT when Refresh updated labels off-thread.)
+        self._async_queue: SimpleQueue[
+            tuple[
+                Callable[[Any], None] | None,
+                Callable[[BaseException], None] | None,
+                tuple[str, Any],
+            ]
+        ] = SimpleQueue()
         self._reconnect_left = 0
         self._reconnect_active = False
 
@@ -561,6 +557,11 @@ class MainWindow(QMainWindow):
         self._reconnect_timer.setInterval(RECONNECT_POLL_MS)
         self._reconnect_timer.timeout.connect(self._on_reconnect_tick)
 
+        self._async_pump = QTimer(self)
+        self._async_pump.setInterval(_ASYNC_PUMP_MS)
+        self._async_pump.timeout.connect(self._drain_async_queue)
+        self._async_pump.start()
+
     def _build_profile(self) -> dict[str, Any]:
         label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]
         _ = label
@@ -669,38 +670,50 @@ class MainWindow(QMainWindow):
         on_err: Callable[[BaseException], None] | None = None,
         busy_message: str | None = None,
     ) -> bool:
-        """Run ``fn`` in a worker thread; deliver result on the GUI thread."""
+        """Run ``fn`` in a daemon thread; deliver result via GUI-thread queue.
+
+        Do **not** use QThread+Signal→lambda: PySide6 may invoke the callable
+        with DirectConnection on the worker thread, and updating QLabel /
+        QStatusBar there SIGSEGVs in QFontEngineFT (seen on Python 3.14).
+        """
         if self._async_busy:
             return False
         self._async_busy = True
         if busy_message:
             self.statusBar().showMessage(busy_message)
 
-        thread = QThread(self)
-        worker = _FnWorker(fn)
-        worker.moveToThread(thread)
+        queue = self._async_queue
 
-        def _finish(payload: object) -> None:
+        def runner() -> None:
+            try:
+                payload: tuple[str, Any] = ("ok", fn())
+            except BaseException as exc:  # noqa: BLE001 — marshal to GUI
+                payload = ("err", exc)
+            queue.put((on_ok, on_err, payload))
+
+        threading.Thread(
+            target=runner,
+            name="mxmaster-cfg-helper",
+            daemon=True,
+        ).start()
+        return True
+
+    def _drain_async_queue(self) -> None:
+        """Apply worker results on the GUI thread only."""
+        while True:
+            try:
+                on_ok, on_err, payload = self._async_queue.get_nowait()
+            except Empty:
+                break
             self._async_busy = False
-            thread.quit()
-            kind, value = payload  # type: ignore[misc]
+            kind, value = payload
             if kind == "ok":
-                on_ok(value)
+                if on_ok is not None:
+                    on_ok(value)
             elif on_err is not None:
                 on_err(value)
             else:
                 self.statusBar().showMessage("Ошибка: %s" % value)
-            worker.deleteLater()
-            thread.deleteLater()
-            self._async_thread = None
-            self._async_worker = None
-
-        worker.finished.connect(_finish)
-        thread.started.connect(worker.run)
-        self._async_thread = thread
-        self._async_worker = worker
-        thread.start()
-        return True
 
     def _on_refresh(self) -> None:
         if not self._run_async(
