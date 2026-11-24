@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMainWindow,
     QMessageBox,
@@ -33,17 +34,21 @@ from PySide6.QtWidgets import (
 from mxmaster_cfg.adapter.logiops_cfg import CfgWriter
 from mxmaster_cfg.adapter.logiops_dbus import CID_GESTURE
 from mxmaster_cfg.buttons import (
+    ACTION_CHANGE_HOST_CUSTOM,
     ACTION_DEFAULT,
     ACTION_GESTURES,
+    ACTION_KEY_CUSTOM,
     BUTTON_ACTION_PRESETS,
     REMAPPABLE_BUTTONS,
     action_signature,
     button_label,
     buttons_from_profile,
-    default_gesture_button_action,
+    change_host_preset_id,
     match_button_preset,
-    preset_action,
+    normalize_host,
+    resolve_button_action,
 )
+from mxmaster_cfg.gui.key_capture_widget import KeyCaptureBar
 from mxmaster_cfg.adapter.plasma_scroll import (
     SCROLL_FACTOR_DEFAULT,
     SCROLL_FACTOR_MAX,
@@ -74,6 +79,7 @@ from mxmaster_cfg.status_hold import (
     WAKE_SETTLE_MS,
     device_dicts,
     should_auto_wake,
+    should_clear_device_labels,
     should_hold_last_good,
     soft_miss_quirk,
 )
@@ -611,6 +617,8 @@ class MainWindow(QMainWindow):
         remap_box = QGroupBox("Remap кнопок (CID)")
         remap_form = QFormLayout(remap_box)
         self.button_combos: dict[int, QComboBox] = {}
+        self.button_key_captures: dict[int, KeyCaptureBar] = {}
+        self.button_host_edits: dict[int, QLineEdit] = {}
         for info in REMAPPABLE_BUTTONS:
             combo = QComboBox()
             for preset_id, preset_label, _action in BUTTON_ACTION_PRESETS:
@@ -628,17 +636,44 @@ class MainWindow(QMainWindow):
                     break
             combo.setCurrentIndex(default_idx)
             combo.currentIndexChanged.connect(self._on_button_action_changed)
+
+            key_cap = KeyCaptureBar()
+            key_cap.setVisible(False)
+
+            host_edit = QLineEdit()
+            host_edit.setPlaceholderText("1 / 2 / 3 / next / prev")
+            host_edit.setToolTip(
+                "ChangeHost: номер канала Easy-Switch (1-based) или "
+                "next / prev. logiops host."
+            )
+            host_edit.setMaximumWidth(160)
+            host_edit.setVisible(False)
+
+            row = QWidget()
+            row_l = QVBoxLayout(row)
+            row_l.setContentsMargins(0, 0, 0, 0)
+            row_l.setSpacing(4)
+            row_l.addWidget(combo)
+            row_l.addWidget(key_cap)
+            row_l.addWidget(host_edit)
+
             self.button_combos[info.cid] = combo
-            remap_form.addRow(button_label(info, lang="ru") + ":", combo)
+            self.button_key_captures[info.cid] = key_cap
+            self.button_host_edits[info.cid] = host_edit
+            remap_form.addRow(button_label(info, lang="ru") + ":", row)
         self.lbl_remap_hint = QLabel(
             "По умолчанию = не писать в cfg (firmware/ОС). "
-            "Отключить = type None. Жесты — только для 0xc3. "
-            "Persist: «Применить в cfg»."
+            "Отключить = type None. "
+            "Keypress (записать) — «Записать», затем chord на клавиатуре "
+            "(Esc = отмена). "
+            "ChangeHost — канал Easy-Switch (1…3 / next / prev). "
+            "Жесты — только для 0xc3. Persist: «Применить в cfg»."
         )
         self.lbl_remap_hint.setWordWrap(True)
         self.lbl_remap_hint.setStyleSheet("color: #555;")
         remap_form.addRow(self.lbl_remap_hint)
         layout.addWidget(remap_box)
+        self._sync_button_detail_editors()
 
         # --- Gestures (directions for CID 0xc3 when action = Gestures) ---
         self.gest_box = QGroupBox("Жесты (кнопка Gesture, CID 0xc3)")
@@ -806,12 +841,29 @@ class MainWindow(QMainWindow):
 
     def _on_button_action_changed(self, _index: int = 0) -> None:
         self._sync_gesture_box_enabled()
+        self._sync_button_detail_editors()
 
     def _sync_gesture_box_enabled(self) -> None:
         """Show direction grid only when Gesture CID uses Gestures mode."""
         enabled = self._selected_button_preset(CID_GESTURE) == ACTION_GESTURES
         self.gest_box.setEnabled(enabled)
         self.gest_box.setVisible(True)
+
+    def _sync_button_detail_editors(self) -> None:
+        """Show Keypress / ChangeHost editors only when that preset is active."""
+        for info in REMAPPABLE_BUTTONS:
+            cid = info.cid
+            preset = self._selected_button_preset(cid)
+            key_cap = self.button_key_captures.get(cid)
+            host_edit = self.button_host_edits.get(cid)
+            if key_cap is not None:
+                show = preset == ACTION_KEY_CUSTOM
+                key_cap.setVisible(show)
+                if not show and key_cap.is_listening():
+                    # Leaving custom preset stops listen; keep current chord.
+                    key_cap.set_keys(key_cap.keys())
+            if host_edit is not None:
+                host_edit.setVisible(preset == ACTION_CHANGE_HOST_CUSTOM)
 
     def _build_gesture_direction_actions(self) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
@@ -825,6 +877,19 @@ class MainWindow(QMainWindow):
             out[direction] = action
         return out
 
+    def _custom_keys_for_cid(self, cid: int) -> list[str]:
+        cap = self.button_key_captures.get(cid)
+        if cap is None:
+            return []
+        return cap.keys()
+
+    def _custom_host_for_cid(self, cid: int) -> int | str:
+        edit = self.button_host_edits.get(cid)
+        if edit is None:
+            return 1
+        host = normalize_host(edit.text())
+        return 1 if host is None else host
+
     def _build_buttons(self) -> list[dict[str, Any]]:
         """Build profile ``buttons`` from per-CID pickers (omit Default)."""
         buttons: list[dict[str, Any]] = []
@@ -832,22 +897,20 @@ class MainWindow(QMainWindow):
             preset_id = self._selected_button_preset(info.cid)
             if preset_id == ACTION_DEFAULT:
                 continue
-            if preset_id == ACTION_GESTURES:
-                action = default_gesture_button_action(
-                    self._build_gesture_direction_actions()
-                )
-            elif preset_id == "key_custom":
-                combo = self.button_combos[info.cid]
-                custom = combo.property("custom_action")
-                if not isinstance(custom, dict):
-                    continue
-                action = dict(custom)
-                if "keys" in action:
-                    action["keys"] = list(action["keys"] or [])
-            else:
-                action = preset_action(preset_id)
-                if action is None:
-                    continue
+            action = resolve_button_action(
+                preset_id,
+                custom_keys=self._custom_keys_for_cid(info.cid),
+                host=self._custom_host_for_cid(info.cid),
+                gesture_directions=self._build_gesture_direction_actions(),
+            )
+            if action is None:
+                continue
+            # Empty custom Keypress is useless — skip rather than write keys:[].
+            if (
+                preset_id == ACTION_KEY_CUSTOM
+                and not (action.get("keys") or [])
+            ):
+                continue
             buttons.append(
                 {
                     "cid": info.cid,
@@ -1238,6 +1301,12 @@ class MainWindow(QMainWindow):
             last_good_mono=self._last_good_monotonic,
             now_mono=now,
             hold_s=LAST_GOOD_HOLD_S,
+            logid_active=(
+                bool(empty_data.get("logid_active"))
+                if "logid_active" in empty_data
+                else None
+            ),
+            empty_poll=empty_data,
         ):
             return False
         assert good is not None
@@ -1269,6 +1338,22 @@ class MainWindow(QMainWindow):
         return True
 
     def _clear_device_labels(self, data: dict[str, Any]) -> None:
+        # Never wipe a last-good snapshot on soft empty while logid is up.
+        if not should_clear_device_labels(
+            has_devices=False,
+            last_good=self._last_good_status,
+            last_good_mono=self._last_good_monotonic,
+            now_mono=time.monotonic(),
+            hold_s=LAST_GOOD_HOLD_S,
+            logid_active=(
+                bool(data.get("logid_active"))
+                if "logid_active" in data
+                else None
+            ),
+            empty_poll=data,
+        ):
+            if self._hold_last_good_ui(data):
+                return
         self.lbl_name.setText("(нет)")
         self.lbl_path.setText("—")
         self.lbl_pid.setText("—")
@@ -1664,6 +1749,7 @@ class MainWindow(QMainWindow):
                 last_good=self._last_good_status,
                 last_good_mono=self._last_good_monotonic,
                 now_mono=time.monotonic(),
+                logid_active=True,
             ):
                 self.statusBar().showMessage(
                     "Опрос закончен — держим последний снимок; "
@@ -1699,6 +1785,12 @@ class MainWindow(QMainWindow):
                 last_good=self._last_good_status,
                 last_good_mono=self._last_good_monotonic,
                 now_mono=time.monotonic(),
+                logid_active=(
+                    bool(data.get("logid_active"))
+                    if "logid_active" in data
+                    else True
+                ),
+                empty_poll=data,
             ):
                 self.lbl_quirk.setText(
                     soft_miss_quirk(
@@ -1745,6 +1837,8 @@ class MainWindow(QMainWindow):
                         last_good=self._last_good_status,
                         last_good_mono=self._last_good_monotonic,
                         now_mono=time.monotonic(),
+                        logid_active=True,
+                        empty_poll=data,
                     )
                 ):
                     self.lbl_quirk.setText(str(data.get("quirk")))
@@ -1941,35 +2035,44 @@ class MainWindow(QMainWindow):
                 combo = self.button_combos.get(info.cid)
                 if combo is None:
                     continue
+                key_cap = self.button_key_captures.get(info.cid)
+                host_edit = self.button_host_edits.get(info.cid)
                 if info.cid in configured:
-                    preset_id = match_button_preset(configured[info.cid])
-                else:
-                    preset_id = ACTION_DEFAULT
-                # Unknown Keypress → show as custom row once.
-                if preset_id == "key_custom":
                     act = configured[info.cid]
-                    keys = ",".join(act.get("keys") or [])
-                    custom_label = f"Keypress ({keys})"
-                    # Reuse existing custom item if present.
-                    found = -1
-                    for i in range(combo.count()):
-                        if combo.itemData(i) == "key_custom":
-                            found = i
-                            combo.setItemText(i, custom_label)
-                            break
-                    if found < 0:
-                        combo.addItem(custom_label, "key_custom")
-                        found = combo.count() - 1
-                    # Stash raw action on the combo for build.
-                    combo.setProperty("custom_action", act)
-                    combo.setCurrentIndex(found)
+                    preset_id = match_button_preset(act)
                 else:
-                    idx = 0
-                    for i in range(combo.count()):
-                        if combo.itemData(i) == preset_id:
-                            idx = i
-                            break
-                    combo.setCurrentIndex(idx)
+                    act = None
+                    preset_id = ACTION_DEFAULT
+
+                if preset_id == ACTION_KEY_CUSTOM and isinstance(act, dict):
+                    if key_cap is not None:
+                        key_cap.set_keys(list(act.get("keys") or []))
+                if (
+                    preset_id
+                    in {
+                        ACTION_CHANGE_HOST_CUSTOM,
+                        "change_host_1",
+                        "change_host_2",
+                        "change_host_3",
+                        "change_host_next",
+                        "change_host_prev",
+                    }
+                    and isinstance(act, dict)
+                    and host_edit is not None
+                ):
+                    host = normalize_host(act.get("host"))
+                    if host is not None:
+                        host_edit.setText(str(host))
+                    # Unknown host → force custom preset + editor.
+                    if change_host_preset_id(host) == ACTION_CHANGE_HOST_CUSTOM:
+                        preset_id = ACTION_CHANGE_HOST_CUSTOM
+
+                idx = 0
+                for i in range(combo.count()):
+                    if combo.itemData(i) == preset_id:
+                        idx = i
+                        break
+                combo.setCurrentIndex(idx)
 
             for direction, action in _gesture_actions_from_profile(
                 profile
@@ -1979,6 +2082,7 @@ class MainWindow(QMainWindow):
                         _match_gesture_preset(action)
                     )
             self._sync_gesture_box_enabled()
+            self._sync_button_detail_editors()
         finally:
             self._suppress_live = prev
             self._live_timer.stop()

@@ -73,7 +73,7 @@ members noted where they differ.
 | `0xd7` | Extra | **done** | Per-CID picker (default = omit / firmware) |
 | Gesture OnInterval / Axis / RawXY | **missing** | Only OnRelease Keypress/CycleDPI/ToggleSS presets |
 | Gesture sensitivity / pixels | **missing** | |
-| Free-form custom Keypress editor | **partial** | Common shortcuts + load unknown Keypress as custom |
+| Free-form custom Keypress editor | **done** | Per-CID editor + presets; unknown Keypress loads as custom and round-trips ([buttons.md](buttons.md)) |
 
 ## Battery / power
 
@@ -92,7 +92,7 @@ members noted where they differ.
 | Bluetooth | **partial** | logiops supports; less smoke-tested here |
 | Easy-Switch channel UI | **missing** | Physical switch only |
 | Pairing / unpairing Bolt | **missing** | Use Solaar / logitechctl; out of MVP |
-| Multi-host ChangeHost action | **missing** | Action type allowed in schema; no GUI |
+| Multi-host ChangeHost action | **done** | Per-CID picker: hosts 1–3, next/prev, custom host → cfg ([buttons.md](buttons.md)) |
 
 ## Flow / desktop integration
 
@@ -127,11 +127,10 @@ Device name in cfg must match logiops discovery string.
 ## Top missing gaps (priority for later)
 
 1. **App-aware profiles** (post-MVP by design)
-2. **Bluetooth first-class smoke + Easy-Switch/host UI**
+2. **Bluetooth first-class smoke + Easy-Switch physical-channel discovery UI**
 3. **Thumb touch/proxy + free-form thumb editor**
-4. **Free-form Keypress / ChangeHost editor** (beyond common shortcuts)
-5. **SmartShift Enhanced / torque** on devices that support it
-6. **Flow / Actions Ring / firmware** — largely **impossible** on this stack
+4. **SmartShift Enhanced / torque** on devices that support it
+5. **Flow / Actions Ring / firmware** — largely **impossible** on this stack
 
 ## Implemented closest to Options+ scroll speed
 

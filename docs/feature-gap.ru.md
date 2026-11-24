@@ -72,7 +72,7 @@
 | `0xd7` | Доп. | **done** | Picker (default = omit / firmware) |
 | OnInterval / Axis / RawXY жесты | **missing** | Только OnRelease пресеты |
 | Чувствительность жеста | **missing** | |
-| Свободный Keypress-редактор | **partial** | Частые ярлыки + custom при загрузке |
+| Свободный Keypress-редактор | **done** | Per-CID редактор + пресеты; неизвестный Keypress → custom, round-trip ([buttons.ru.md](buttons.ru.md)) |
 
 ## Батарея / питание
 
@@ -91,7 +91,7 @@
 | Bluetooth | **partial** | logiops умеет; меньше smoke |
 | UI канала Easy-Switch | **missing** | Только физический переключатель |
 | Pairing Bolt | **missing** | Solaar / logitechctl; вне MVP |
-| ChangeHost | **missing** | Тип в схеме есть; GUI нет |
+| ChangeHost | **done** | Picker: каналы 1–3, next/prev, свой host → cfg ([buttons.ru.md](buttons.ru.md)) |
 
 ## Flow / десктоп
 
@@ -126,11 +126,10 @@
 ## Главные дыры (на потом)
 
 1. **App-aware профили** (post-MVP)
-2. **Bluetooth smoke + Easy-Switch/host UI**
+2. **Bluetooth smoke + UI физического канала Easy-Switch**
 3. **Thumb touch/proxy + свободный редактор**
-4. **Свободный Keypress / ChangeHost** (кроме частых ярлыков)
-5. **SmartShift Enhanced / torque** где поддерживается
-6. **Flow / Actions Ring / прошивка** — в основном **impossible**
+4. **SmartShift Enhanced / torque** где поддерживается
+5. **Flow / Actions Ring / прошивка** — в основном **impossible**
 
 ## Ближайший аналог скорости скролла Options+
 
