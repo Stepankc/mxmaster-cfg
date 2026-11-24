@@ -66,6 +66,20 @@
         "target": { "type": "boolean" }
       }
     },
+    "thumbwheel": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "HID++ 0x2150 ThumbWheel (logiops thumbwheel). No haptic in 0.3.5.",
+      "properties": {
+        "divert": { "type": "boolean" },
+        "invert": { "type": "boolean" },
+        "left": { "$ref": "#/$defs/thumbGesture" },
+        "right": { "$ref": "#/$defs/thumbGesture" },
+        "tap": { "$ref": "#/$defs/basicAction" },
+        "touch": { "$ref": "#/$defs/basicAction" },
+        "proxy": { "$ref": "#/$defs/basicAction" }
+      }
+    },
     "buttons": {
       "type": "array",
       "items": {
@@ -131,6 +145,56 @@
             }
           }
         }
+      }
+    }
+  },
+  "$defs": {
+    "basicAction": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "None",
+            "Keypress",
+            "ToggleSmartShift",
+            "ToggleHiresScroll",
+            "CycleDPI",
+            "ChangeDPI",
+            "ChangeHost"
+          ]
+        },
+        "keys": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dpis": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      }
+    },
+    "thumbGesture": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "NoPress",
+            "Axis",
+            "OnInterval",
+            "OnFewPixels",
+            "OnRelease",
+            "OnThreshold"
+          ]
+        },
+        "axis": { "type": "string" },
+        "axis_multiplier": { "type": "number" },
+        "interval": { "type": "integer" },
+        "threshold": { "type": "integer" },
+        "action": { "$ref": "#/$defs/basicAction" }
       }
     }
   }

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Main window: device, DPI, SmartShift, HiRes, remap, gestures — Apply via helper."""
+"""Main window: device, DPI, SmartShift, HiRes, thumbwheel, remap, gestures."""
 
 from __future__ import annotations
 
@@ -33,6 +33,47 @@ REMAP_CHOICES: list[tuple[str, int, str]] = [
     ("Forward → KEY_BACK", CID_FORWARD, "back"),
     ("Back → KEY_BACK (штатно)", CID_BACK, "back"),
     ("Back → KEY_FORWARD", CID_BACK, "forward"),
+]
+
+# Thumb wheel left/right gesture presets (need divert=true except "OS default").
+# Each entry: (label, gesture_dict | None). None = omit side (OS handles scroll).
+THUMB_SCROLL_PRESETS: list[tuple[str, dict[str, Any] | None]] = [
+    ("ОС / не divert (omit)", None),
+    (
+        "Axis REL_HWHEEL_HI_RES",
+        {
+            "mode": "Axis",
+            "axis": "REL_HWHEEL_HI_RES",
+            "axis_multiplier": 1,
+        },
+    ),
+    (
+        "Axis REL_HWHEEL",
+        {"mode": "Axis", "axis": "REL_HWHEEL", "axis_multiplier": 1},
+    ),
+    ("Отключить (NoPress)", {"mode": "NoPress"}),
+    (
+        "Громкость (OnInterval)",
+        {
+            "mode": "OnInterval",
+            "interval": 2,
+            "action": {"type": "Keypress", "keys": ["KEY_VOLUMEUP"]},
+        },
+    ),
+]
+
+# Opposite side volume key for the volume preset (left vs right).
+_THUMB_VOL_KEYS = {
+    "left": ["KEY_VOLUMEDOWN"],
+    "right": ["KEY_VOLUMEUP"],
+}
+
+THUMB_TAP_PRESETS: list[tuple[str, dict[str, Any] | None]] = [
+    ("Нет", None),
+    ("None (явный)", {"type": "None"}),
+    ("KEY_MUTE", {"type": "Keypress", "keys": ["KEY_MUTE"]}),
+    ("KEY_PLAYPAUSE", {"type": "Keypress", "keys": ["KEY_PLAYPAUSE"]}),
+    ("KEY_LEFTMETA", {"type": "Keypress", "keys": ["KEY_LEFTMETA"]}),
 ]
 
 # Gesture direction action presets → profile action dict.
@@ -101,8 +142,8 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(
             QLabel(
-                "DPI · SmartShift · HiRes Wheel · remap · жесты (CID 0xc3) → "
-                "polkit-helper → logid 0.3.5 (Bolt)."
+                "DPI · SmartShift · HiRes · ThumbWheel · батарея · remap · "
+                "жесты → polkit-helper → logid 0.3.5 (Bolt)."
             )
         )
 
@@ -112,12 +153,15 @@ class MainWindow(QMainWindow):
         self.lbl_name = QLabel("—")
         self.lbl_path = QLabel("—")
         self.lbl_pid = QLabel("—")
+        self.lbl_battery = QLabel("—")
+        self.lbl_battery.setWordWrap(True)
         self.lbl_quirk = QLabel("")
         self.lbl_quirk.setWordWrap(True)
         self.lbl_quirk.setStyleSheet("color: #a15c00;")
         status_form.addRow("Имя:", self.lbl_name)
         status_form.addRow("D-Bus:", self.lbl_path)
         status_form.addRow("ProductID:", self.lbl_pid)
+        status_form.addRow("Батарея:", self.lbl_battery)
         status_form.addRow("Статус:", self.lbl_quirk)
         layout.addWidget(status_box)
 
@@ -192,6 +236,47 @@ class MainWindow(QMainWindow):
         hr_form.addRow(self.lbl_hr_state)
         hr_form.addRow(self.lbl_hr_hint)
         layout.addWidget(hr_box)
+
+        # --- Thumb wheel (feature 0x2150) ---
+        tw_box = QGroupBox("Thumb wheel (0x2150)")
+        tw_form = QFormLayout(tw_box)
+        self.chk_tw_divert = QCheckBox("Divert (колесо → logiops)")
+        self.chk_tw_divert.setChecked(False)
+        self.chk_tw_divert.setToolTip(
+            "thumbwheel.divert — без divert left/right/tap/touch/proxy "
+            "не работают; ОС получает горизонтальный скролл."
+        )
+        self.chk_tw_invert = QCheckBox("Invert (инверсия направления)")
+        self.chk_tw_invert.setChecked(False)
+        self.chk_tw_invert.setToolTip("thumbwheel.invert")
+        self.combo_tw_scroll = QComboBox()
+        for label, _g in THUMB_SCROLL_PRESETS:
+            self.combo_tw_scroll.addItem(label)
+        self.combo_tw_scroll.setCurrentIndex(0)
+        self.combo_tw_scroll.setToolTip(
+            "Пресет для left/right. Для Axis/NoPress/громкости нужен divert."
+        )
+        self.combo_tw_tap = QComboBox()
+        for label, _a in THUMB_TAP_PRESETS:
+            self.combo_tw_tap.addItem(label)
+        self.combo_tw_tap.setCurrentIndex(0)
+        self.combo_tw_tap.setToolTip(
+            "thumbwheel.tap (одиночный тап). Haptic в схеме logiops 0.3.5 нет."
+        )
+        self.lbl_tw_state = QLabel("D-Bus: —")
+        self.lbl_tw_state.setStyleSheet("color: #555;")
+        self.lbl_tw_hint = QLabel(
+            "GetConfig → bb (divert, invert). left/right/tap/touch/proxy — "
+            "только cfg. Haptic не поддерживается схемой logiops 0.3.5."
+        )
+        self.lbl_tw_hint.setWordWrap(True)
+        tw_form.addRow(self.chk_tw_divert)
+        tw_form.addRow(self.chk_tw_invert)
+        tw_form.addRow("Left/Right:", self.combo_tw_scroll)
+        tw_form.addRow("Tap:", self.combo_tw_tap)
+        tw_form.addRow(self.lbl_tw_state)
+        tw_form.addRow(self.lbl_tw_hint)
+        layout.addWidget(tw_box)
 
         # --- Remap ---
         remap_box = QGroupBox("Remap Forward/Back")
@@ -285,6 +370,8 @@ class MainWindow(QMainWindow):
         if self.spin_ss_torque.isEnabled():
             smartshift["torque"] = int(self.spin_ss_torque.value())
 
+        thumbwheel = self._build_thumbwheel()
+
         return {
             "device": {"name": "MX Master 3S"},
             "dpi": dpi,
@@ -294,6 +381,7 @@ class MainWindow(QMainWindow):
                 "invert": self.chk_hr_invert.isChecked(),
                 "target": self.chk_hr_target.isChecked(),
             },
+            "thumbwheel": thumbwheel,
             "buttons": [
                 {
                     "cid": CID_GESTURE,
@@ -310,6 +398,37 @@ class MainWindow(QMainWindow):
                 },
             ],
         }
+
+    def _build_thumbwheel(self) -> dict[str, Any]:
+        divert = self.chk_tw_divert.isChecked()
+        invert = self.chk_tw_invert.isChecked()
+        tw: dict[str, Any] = {"divert": divert, "invert": invert}
+
+        scroll_idx = self.combo_tw_scroll.currentIndex()
+        scroll_base = THUMB_SCROLL_PRESETS[scroll_idx][1]
+        if divert and isinstance(scroll_base, dict):
+            for side in ("left", "right"):
+                gest = dict(scroll_base)
+                # Volume preset: opposite keys per side.
+                if gest.get("mode") == "OnInterval":
+                    action = dict(gest.get("action") or {})
+                    if action.get("type") == "Keypress":
+                        action["keys"] = list(_THUMB_VOL_KEYS[side])
+                        gest["action"] = action
+                elif gest.get("mode") == "Axis":
+                    # Mirror multiplier: left negative, right positive.
+                    mult = int(gest.get("axis_multiplier", 1) or 1)
+                    gest["axis_multiplier"] = -abs(mult) if side == "left" else abs(mult)
+                tw[side] = gest
+
+        tap_idx = self.combo_tw_tap.currentIndex()
+        tap = THUMB_TAP_PRESETS[tap_idx][1]
+        if divert and isinstance(tap, dict):
+            action = dict(tap)
+            if "keys" in action:
+                action["keys"] = list(action["keys"])
+            tw["tap"] = action
+        return tw
 
     def _on_refresh(self) -> None:
         try:
@@ -331,10 +450,12 @@ class MainWindow(QMainWindow):
             self.lbl_name.setText("(нет)")
             self.lbl_path.setText("—")
             self.lbl_pid.setText("—")
+            self.lbl_battery.setText("—")
             quirk = data.get("quirk") or "Устройство не найдено."
             self.lbl_quirk.setText(str(quirk))
             self.statusBar().showMessage(
-                "logid active=%s, devices=0" % data.get("logid_active")
+                "logid active=%s, devices=0 — пошевелите мышь (Bolt)"
+                % data.get("logid_active")
             )
             return
 
@@ -343,6 +464,7 @@ class MainWindow(QMainWindow):
         self.lbl_path.setText(str(dev.get("path") or "?"))
         pid = dev.get("product_id")
         self.lbl_pid.setText(str(pid) if pid is not None else "—")
+        self._apply_battery_label(dev)
         if dev.get("dpi") is not None:
             self.spin_dpi.setValue(int(dev["dpi"]))
             self.lbl_quirk.setText(data.get("quirk") or "OK")
@@ -396,10 +518,50 @@ class MainWindow(QMainWindow):
             err = dev.get("hiresscroll_error") or "н/д"
             self.lbl_hr_state.setText("D-Bus: %s" % err)
 
+        tw = dev.get("thumbwheel")
+        if isinstance(tw, dict):
+            divert = bool(tw.get("divert", False))
+            invert_tw = bool(tw.get("invert", False))
+            self.chk_tw_divert.setChecked(divert)
+            self.chk_tw_invert.setChecked(invert_tw)
+            self.lbl_tw_state.setText(
+                "bb divert=%s invert=%s" % (divert, invert_tw)
+            )
+        else:
+            err = dev.get("thumbwheel_error") or "н/д"
+            self.lbl_tw_state.setText("D-Bus: %s" % err)
+
         self.statusBar().showMessage(
-            "Устройств: %s · logid=%s"
-            % (data.get("device_count"), data.get("logid_active"))
+            "Устройств: %s · logid=%s · батарея=%s"
+            % (
+                data.get("device_count"),
+                data.get("logid_active"),
+                "ok" if dev.get("battery_available") else "н/д",
+            )
         )
+
+    def _apply_battery_label(self, dev: dict[str, Any]) -> None:
+        bat = dev.get("battery")
+        if isinstance(bat, dict) and bat.get("percent") is not None:
+            pct = int(bat["percent"])
+            charging = bat.get("charging")
+            if charging is True:
+                state = "зарядка"
+            elif charging is False:
+                state = "разряд"
+            else:
+                state = "?"
+            src = bat.get("source") or "D-Bus"
+            self.lbl_battery.setText("%s%% (%s) · %s" % (pct, state, src))
+            return
+        err = dev.get("battery_error") or "н/д"
+        # Keep the UI short; full reason is in helper JSON.
+        if "no Battery interface" in str(err) or "0x1004" in str(err):
+            self.lbl_battery.setText(
+                "н/д — logiops 0.3.5 не отдаёт Unified Battery (0x1004) по D-Bus"
+            )
+        else:
+            self.lbl_battery.setText("н/д — %s" % err)
 
     def _on_apply(self) -> None:
         profile = self._build_profile()
@@ -414,12 +576,14 @@ class MainWindow(QMainWindow):
         quirk = result.get("quirk")
         ss = profile["smartshift"]
         hr = profile["hiresscroll"]
+        tw = profile.get("thumbwheel") or {}
         msg = (
             f"Записано {result.get('wrote')}\n"
             f"DPI: {profile['dpi']}\n"
             f"SmartShift: on={ss.get('on')} threshold={ss.get('threshold')}\n"
             f"HiRes: hires={hr.get('hires')} invert={hr.get('invert')} "
             f"target={hr.get('target')}\n"
+            f"ThumbWheel: divert={tw.get('divert')} invert={tw.get('invert')}\n"
             f"Жесты: CID 0xc3 ({len(profile['buttons'][0]['action']['gestures'])} направлений)\n"
             f"devices: {result.get('devices') or []}\n"
             f"bolt_usb_wake: {result.get('bolt_usb_wake')}"

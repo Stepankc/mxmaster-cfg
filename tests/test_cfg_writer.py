@@ -32,6 +32,56 @@ def test_render_hiresscroll_fields() -> None:
     assert "target: true;" in text
 
 
+def test_render_thumbwheel_divert_invert_and_axis() -> None:
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "dpi": 1000,
+        "thumbwheel": {
+            "divert": True,
+            "invert": False,
+            "left": {
+                "mode": "Axis",
+                "axis": "REL_HWHEEL_HI_RES",
+                "axis_multiplier": -1,
+            },
+            "right": {
+                "mode": "Axis",
+                "axis": "REL_HWHEEL_HI_RES",
+                "axis_multiplier": 1,
+            },
+            "tap": {"type": "Keypress", "keys": ["KEY_MUTE"]},
+        },
+    }
+    text = CfgWriter(profile).render()
+    assert "thumbwheel:" in text
+    assert "divert: true;" in text
+    assert "invert: false;" in text
+    assert 'mode: "Axis";' in text
+    assert 'axis: "REL_HWHEEL_HI_RES";' in text
+    assert "axis_multiplier: -1;" in text
+    assert "tap =" in text
+    assert 'type: "Keypress";' in text
+    assert '"KEY_MUTE"' in text
+    # No haptic in logiops schema — writer must not invent it.
+    assert "haptic" not in text
+
+
+def test_render_thumbwheel_nopress() -> None:
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "thumbwheel": {
+            "divert": True,
+            "invert": True,
+            "left": {"mode": "NoPress"},
+            "right": {"mode": "NoPress"},
+        },
+    }
+    text = CfgWriter(profile).render()
+    assert "divert: true;" in text
+    assert "invert: true;" in text
+    assert 'mode: "NoPress";' in text
+
+
 def test_render_cycle_dpi_in_gestures() -> None:
     profile = {
         "device": {"name": "MX Master 3S"},

@@ -217,3 +217,27 @@ def set_hiresscroll(
     if target is not None:
         argv.extend(["--target", "true" if target else "false"])
     return run_helper(argv).data
+
+
+def get_thumbwheel(device: int = 0) -> dict[str, Any]:
+    return run_helper(["get-thumbwheel", "--device", str(device)]).data
+
+
+def set_thumbwheel(
+    *,
+    divert: bool | None = None,
+    invert: bool | None = None,
+    device: int = 0,
+) -> dict[str, Any]:
+    """Live ThumbWheel divert/invert (feature 0x2150). Prefer apply-cfg."""
+    argv: list[str] = ["set-thumbwheel", "--device", str(device)]
+    if divert is not None:
+        argv.extend(["--divert", "true" if divert else "false"])
+    if invert is not None:
+        argv.extend(["--invert", "true" if invert else "false"])
+    return run_helper(argv).data
+
+
+def get_battery(device: int = 0) -> dict[str, Any]:
+    """Probe Unified Battery 0x1004 via logiops D-Bus (often unavailable)."""
+    return run_helper(["get-battery", "--device", str(device)]).data

@@ -24,6 +24,16 @@ hiresscroll:
   invert: false
   target: false
 
+# Thumb wheel (HID++ 0x2150). divert=false → OS horizontal scroll.
+# No haptic field in logiops 0.3.5 schema.
+thumbwheel:
+  divert: false
+  invert: false
+  # When divert:true, useful examples:
+  # left:  { mode: Axis, axis: REL_HWHEEL_HI_RES, axis_multiplier: -1 }
+  # right: { mode: Axis, axis: REL_HWHEEL_HI_RES, axis_multiplier: 1 }
+  # tap:   { type: Keypress, keys: [KEY_MUTE] }
+
 buttons:
   # Gesture button (CID 0xc3 / 195) — typical 3S
   - cid: 0xc3
