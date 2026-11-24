@@ -40,6 +40,8 @@ thumbwheel:
   # left:  { mode: Axis, axis: REL_HWHEEL_HI_RES, axis_multiplier: -1 }
   # right: { mode: Axis, axis: REL_HWHEEL_HI_RES, axis_multiplier: 1 }
   # tap:   { type: Keypress, keys: [KEY_MUTE] }
+  # touch: { type: Keypress, keys: [KEY_LEFTMETA] }
+  # proxy: { type: Keypress, keys: [KEY_LEFTCTRL, KEY_X] }
 
 buttons:
   # Gesture button (CID 0xc3 / 195) — typical 3S

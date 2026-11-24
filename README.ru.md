@@ -28,7 +28,9 @@ remap кнопок и жесты (CID `0xc3`).
   (по умолчанию **hires выкл** с SmartShift → скролл по щелчку трещотки)
 - **Скорость скролла**: слайдер Plasma `ScrollFactor` (безопасно, без divert);
   опционально divert Axis — [docs/scroll-speed.ru.md](docs/scroll-speed.ru.md)
-- **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты left/right/tap
+- **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты
+  left/right/tap/touch/proxy + свободный Axis / Keypress
+  ([docs/thumbwheel.ru.md](docs/thumbwheel.ru.md))
 - **Батарея** % + зарядка (Unified Battery `0x1004` коротким hidraw-probe;
   UPower/sysfs, если ядро отдаёт; в D-Bus logiops 0.3.5 Battery нет)
 - **Полный remap** всех remappable CID (`0x52`…`0xd7`): **Keypress** захват

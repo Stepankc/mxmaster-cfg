@@ -54,9 +54,9 @@
 |---------|--------|---------|
 | Divert / invert | **done** | |
 | Горизонтальный скролл (ОС) | **done** | По умолчанию без divert |
-| Пресеты left/right / громкость | **partial** | Комбо; не свободный редактор |
-| Tap | **partial** | Только пресеты |
-| Touch / proxy | **missing** | Writer умеет; GUI нет |
+| Пресеты left/right / громкость | **done** | Пресеты + свободный Axis / OnInterval Keypress ([thumbwheel.ru.md](thumbwheel.ru.md)) |
+| Tap | **done** | Пресеты + свободный Keypress; неизвестный → «свой» |
+| Touch / proxy | **done** | Тот же picker, что tap; round-trip через CfgWriter |
 | Haptic | **impossible** | Нет в схеме logiops 0.3.5 |
 
 ## Кнопки / ремэп
@@ -127,9 +127,8 @@
 
 1. **App-aware профили** (post-MVP)
 2. **Bluetooth smoke + UI физического канала Easy-Switch**
-3. **Thumb touch/proxy + свободный редактор**
-4. **SmartShift Enhanced / torque** где поддерживается
-5. **Flow / Actions Ring / прошивка** — в основном **impossible**
+3. **SmartShift Enhanced / torque** где поддерживается
+4. **Flow / Actions Ring / прошивка** — в основном **impossible**
 
 ## Ближайший аналог скорости скролла Options+
 
