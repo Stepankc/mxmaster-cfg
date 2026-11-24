@@ -3,7 +3,7 @@
 [English](README.md) · [Русский](README.ru.md)
 
 Linux GUI для мышей **Logitech MX Master** через **[logiops](https://github.com/PixlOne/logiops)** (`logid`):
-DPI, SmartShift, hi-res scroll, thumb wheel, батарея (если logiops отдаёт),
+DPI, SmartShift, hi-res scroll, thumb wheel, реальный % батареи,
 remap кнопок и жесты (CID `0xc3`).
 
 | | |
@@ -26,8 +26,8 @@ remap кнопок и жесты (CID `0xc3`).
 - **SmartShift** on/off + threshold (корректный **tri-state** `GetConfig` в logiops)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты left/right/tap
-- **Батарея** (Unified Battery `0x1004`), если logiops отдаёт по D-Bus
-  (на пакете 0.3.5 — н/д, GUI показывает причину)
+- **Батарея** % + зарядка (Unified Battery `0x1004` коротким hidraw-probe;
+  UPower/sysfs, если ядро отдаёт; в D-Bus logiops 0.3.5 Battery нет)
 - **Remap** Forward/Back и пресеты **жестов** (persist через `/etc/logid.cfg` + restart `logid`)
 - Подсказка Bolt-quirk («пошевелите мышь»), если после restart устройств нет
 - Проверка конфликта HID++ (Solaar / OpenLogi / ratbagd)

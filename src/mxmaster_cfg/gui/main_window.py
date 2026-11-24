@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QStatusBar,
     QVBoxLayout,
@@ -150,11 +151,24 @@ class MainWindow(QMainWindow):
         # --- Device status ---
         status_box = QGroupBox("Устройство")
         status_form = QFormLayout(status_box)
+        status_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         self.lbl_name = QLabel("—")
         self.lbl_path = QLabel("—")
         self.lbl_pid = QLabel("—")
+        # One-line battery row: wrap used to clip under the next GroupBox.
         self.lbl_battery = QLabel("—")
-        self.lbl_battery.setWordWrap(True)
+        self.lbl_battery.setWordWrap(False)
+        self.lbl_battery.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.lbl_battery.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        bat_font = self.lbl_battery.font()
+        bat_font.setBold(True)
+        self.lbl_battery.setFont(bat_font)
         self.lbl_quirk = QLabel("")
         self.lbl_quirk.setWordWrap(True)
         self.lbl_quirk.setStyleSheet("color: #a15c00;")
@@ -163,6 +177,9 @@ class MainWindow(QMainWindow):
         status_form.addRow("ProductID:", self.lbl_pid)
         status_form.addRow("Батарея:", self.lbl_battery)
         status_form.addRow("Статус:", self.lbl_quirk)
+        status_box.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
         layout.addWidget(status_box)
 
         # --- DPI ---
@@ -544,24 +561,54 @@ class MainWindow(QMainWindow):
         bat = dev.get("battery")
         if isinstance(bat, dict) and bat.get("percent") is not None:
             pct = int(bat["percent"])
+            status = str(bat.get("status") or "")
             charging = bat.get("charging")
-            if charging is True:
+            if status == "charging" or (charging is True and status != "full"):
                 state = "зарядка"
-            elif charging is False:
+            elif status == "almost_full":
+                state = "почти полн."
+            elif status == "full":
+                state = "полный"
+            elif status == "discharging" or charging is False:
                 state = "разряд"
             else:
-                state = "?"
-            src = bat.get("source") or "D-Bus"
-            self.lbl_battery.setText("%s%% (%s) · %s" % (pct, state, src))
+                state = status or "?"
+            src_raw = str(bat.get("source") or "")
+            if src_raw.startswith("hidpp:"):
+                src = "HID++"
+            elif src_raw.startswith("upower:"):
+                src = "UPower"
+            elif src_raw.startswith("sysfs:"):
+                src = "sysfs"
+            elif "LogiOps.Battery" in src_raw:
+                src = "D-Bus"
+            else:
+                src = "D-Bus" if src_raw else "?"
+            # Single compact line so QFormLayout does not clip under DPI.
+            line = "%s%% · %s · %s" % (pct, state, src)
+            if bat.get("logid_stopped"):
+                line += " · pause"
+            tip = "Источник: %s" % (src_raw or src)
+            if bat.get("feature"):
+                tip += " · feature %s" % bat.get("feature")
+            if bat.get("hidraw"):
+                tip += " · %s" % bat.get("hidraw")
+            self.lbl_battery.setText(line)
+            self.lbl_battery.setToolTip(tip)
             return
         err = dev.get("battery_error") or "н/д"
-        # Keep the UI short; full reason is in helper JSON.
-        if "no Battery interface" in str(err) or "0x1004" in str(err):
-            self.lbl_battery.setText(
-                "н/д — logiops 0.3.5 не отдаёт Unified Battery (0x1004) по D-Bus"
-            )
+        err_s = str(err)
+        if "hidraw probe failed" in err_s and "UPower" in err_s:
+            short = "н/д"
+            tip = "Нет данных UPower/sysfs и HID++ 0x1004"
+        elif "no Battery interface" in err_s:
+            short = "н/д"
+            tip = "Батарея недоступна (D-Bus / UPower / HID++)"
         else:
-            self.lbl_battery.setText("н/д — %s" % err)
+            short = "н/д"
+            tip = err_s
+        self.lbl_battery.setText(short)
+        self.lbl_battery.setToolTip(tip)
 
     def _on_apply(self) -> None:
         profile = self._build_profile()
