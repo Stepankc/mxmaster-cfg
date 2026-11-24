@@ -49,9 +49,13 @@ The package installs:
 | `/usr/bin/mxmaster-cfg` | GUI entry point (setuptools script) |
 | `/usr/libexec/mxmaster-cfg-helper` | polkit helper |
 | `/usr/share/polkit-1/actions/org.mxmaster.cfg.policy` | polkit action |
-| `/usr/share/applications/mxmaster-cfg.desktop` | desktop entry |
+| `/usr/share/applications/mxmaster-cfg.desktop` | desktop entry (Name: MX Master Config) |
+| `/usr/share/icons/hicolor/scalable/apps/mxmaster-cfg.svg` | app icon |
 | `/usr/share/mxmaster-cfg/examples/` | example profiles |
 | `/usr/lib/udev/rules.d/99-mx-master-hidraw.rules` | hidraw access |
+
+For a local checkout without installing the `.deb`, use
+`scripts/install-desktop.sh` (user Application Menu → absolute `./run.sh`).
 
 Named user profiles remain under `~/.config/mxmaster-cfg/profiles/` (not packaged).
 
