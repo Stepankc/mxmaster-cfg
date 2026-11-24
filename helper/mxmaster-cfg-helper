@@ -1402,7 +1402,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not soft-reset Bolt USB if device missing after restart",
     )
 
+    w = sub.add_parser(
+        "wake-receiver",
+        help="soft USB wake Logi Bolt receiver (046d:c548) and wait for device",
+    )
+    w.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="only toggle authorized; do not poll for D-Bus device",
+    )
+
     return p
+
+
+def cmd_wake_receiver(args: argparse.Namespace) -> int:
+    """Soft-reset Bolt USB and optionally wait until logid sees a device."""
+    woke = _wake_bolt_receiver()
+    if not woke:
+        return _fail(
+            "Logi Bolt receiver (046d:c548) not found under /sys/bus/usb",
+            bolt_usb_wake=False,
+        )
+    found: list[str] = []
+    if not args.no_wait:
+        for _ in range(25):
+            time.sleep(0.4)
+            found = _device_paths()
+            if found:
+                break
+    quirk = None
+    if not args.no_wait and not found:
+        quirk = (
+            "Bolt USB wake done, but no device yet. "
+            "Move the MX Master (Easy-Switch on Bolt) and Refresh."
+        )
+    return _ok(
+        {
+            "bolt_usb_wake": True,
+            "devices": found,
+            "device_count": len(found),
+            "quirk": quirk,
+        }
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1425,6 +1466,7 @@ def main(argv: list[str] | None = None) -> int:
         "set-thumbwheel": cmd_set_thumbwheel,
         "get-battery": cmd_get_battery,
         "apply-cfg": cmd_apply_cfg,
+        "wake-receiver": cmd_wake_receiver,
     }
     return dispatch[args.cmd](args)
 
