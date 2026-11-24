@@ -484,22 +484,25 @@ class MainWindow(QMainWindow):
         self.chk_hr_invert = QCheckBox("Invert (инверсия направления)")
         self.chk_hr_invert.setChecked(False)
         self.chk_hr_invert.setToolTip("logiops hiresscroll.invert")
-        self.chk_hr_target = QCheckBox("Target / divert (колесо → logiops)")
+        self.chk_hr_target = QCheckBox(
+            "Target / divert (только вместе со скоростью)"
+        )
         self.chk_hr_target.setChecked(False)
+        self.chk_hr_target.setEnabled(False)
         self.chk_hr_target.setToolTip(
-            "logiops hiresscroll.target = HID++ divert (Mode::Target). "
-            "Нужен для Axis-множителя скорости; без up/down скролл может "
-            "пропасть."
+            "HID++ Mode::Target. Один target:true БЕЗ up/down Axis "
+            "глотает колесо (нет скролла страниц). Включается только "
+            "чекбоксом скорости ниже; Apply без скорости пишет target:false."
         )
         self.chk_hr_speed = QCheckBox(
-            "Скорость через divert (Axis multiplier)"
+            "Экспериментально: скорость через divert (Axis)"
         )
         self.chk_hr_speed.setChecked(False)
         self.chk_hr_speed.setToolTip(
-            "Включает target + up/down Axis в cfg (logiops #116). "
-            "HID++ 0x2121 не даёт «lines per notch» как Options+ — это "
-            "ближайший реальный контроль. Без divert скорость только в "
-            "KDE/libinput."
+            "ОПАСНО на части стендов (Bolt): divert перехватывает колесо. "
+            "По умолчанию ВЫКЛ — обычный скролл через ОС (KDE Scroll speed). "
+            "Если включить: target + up/down Axis обязательны вместе "
+            "(logiops #116). «Применить в cfg»."
         )
         self.slider_hr_mult = _ValueSlider(
             SCROLL_MULT_MIN,
@@ -512,17 +515,16 @@ class MainWindow(QMainWindow):
         )
         self.slider_hr_mult.setEnabled(False)
         self.slider_hr_mult.setToolTip(
-            "axis_multiplier для REL_WHEEL(_HI_RES). 1.00× = базовая "
-            "шкала divert; <1 медленнее, >1 быстрее. Пишется через "
-            "«Применить в cfg» (D-Bus не задаёт multiplier)."
+            "axis_multiplier для REL_WHEEL(_HI_RES), только если divert "
+            "скорость включена. Без Apply / без Axis скролл не меняется."
         )
         self.lbl_hr_state = QLabel("D-Bus: —")
         self.lbl_hr_state.setStyleSheet("color: #555;")
         self.lbl_hr_hint = QLabel(
-            "Firmware 0x2121: только hires / invert / target (+ capability "
-            "multiplier внутри logiops). Скорость «как в Options+» без divert "
-            "— System Settings → Mouse & Touchpad → Mouse → Scroll speed "
-            "(KDE) / libinput. Divert+Axis — см. docs/scroll-speed.md."
+            "Безопасный путь (по умолчанию): hires/invert, target=false — "
+            "скролл страниц как у ОС. Скорость: KDE → Mouse → Scroll speed. "
+            "Divert+Axis — экспериментально; target без Axis ломает колесо "
+            "(см. docs/scroll-speed.md)."
         )
         self.lbl_hr_hint.setWordWrap(True)
         hr_form.addRow(self.chk_hr_hires)
@@ -718,8 +720,6 @@ class MainWindow(QMainWindow):
         )
         self.chk_ss_on.toggled.connect(lambda _v: self._schedule_live_apply())
         self.chk_hr_speed.toggled.connect(self._on_hr_speed_toggled)
-        self.chk_hr_hires.toggled.connect(self._on_hr_hires_for_speed)
-        self.chk_hr_target.toggled.connect(self._on_hr_target_toggled)
 
         # Initial load after the window is shown (sync sliders from device once).
         QTimer.singleShot(0, lambda: self._on_refresh(sync_controls=True))
@@ -794,39 +794,31 @@ class MainWindow(QMainWindow):
         return max(0.05, float(self.slider_hr_mult.value()) / 100.0)
 
     def _build_hiresscroll(self) -> dict[str, Any]:
-        """Build hiresscroll profile; divert+multiplier when speed control on."""
+        """Build hiresscroll; divert only when experimental speed is opted in.
+
+        ``target:true`` without up/down Axis eats the wheel — never emit that.
+        Default / safe path: hires+invert only, target false (OS scroll).
+        """
         speed_on = self.chk_hr_speed.isChecked()
-        target = True if speed_on else self.chk_hr_target.isChecked()
         hr: dict[str, Any] = {
             "hires": self.chk_hr_hires.isChecked(),
             "invert": self.chk_hr_invert.isChecked(),
-            "target": target,
+            # Standalone target checkbox is display-only; Apply never diverts
+            # unless the experimental speed opt-in is on (with multiplier).
+            "target": bool(speed_on),
         }
         if speed_on:
-            # CfgWriter expands scroll_multiplier → up/down Axis.
             hr["scroll_multiplier"] = round(self._scroll_multiplier(), 3)
         return hr
 
     def _on_hr_speed_toggled(self, checked: bool) -> None:
         self.slider_hr_mult.setEnabled(bool(checked))
-        if checked:
-            blocked = self.chk_hr_target.blockSignals(True)
-            self.chk_hr_target.setChecked(True)
-            self.chk_hr_target.blockSignals(blocked)
-            self.chk_hr_target.setEnabled(False)
-        else:
-            self.chk_hr_target.setEnabled(True)
-
-    def _on_hr_hires_for_speed(self, _checked: bool) -> None:
-        # Axis choice (REL_WHEEL vs HI_RES) follows hires at Apply time.
-        return
-
-    def _on_hr_target_toggled(self, checked: bool) -> None:
-        if not checked and self.chk_hr_speed.isChecked():
-            # Keep divert on while speed control is active.
-            blocked = self.chk_hr_target.blockSignals(True)
-            self.chk_hr_target.setChecked(True)
-            self.chk_hr_target.blockSignals(blocked)
+        # Target indicator follows speed; checkbox stays disabled (not a
+        # separate control — orphan divert is unsafe).
+        blocked = self.chk_hr_target.blockSignals(True)
+        self.chk_hr_target.setChecked(bool(checked))
+        self.chk_hr_target.blockSignals(blocked)
+        self.chk_hr_target.setEnabled(False)
 
     def _apply_hiresscroll_controls(self, hr: dict[str, Any]) -> None:
         """Sync GUI hi-res / speed widgets from a profile dict."""
@@ -837,17 +829,26 @@ class MainWindow(QMainWindow):
         mult = hr.get("scroll_multiplier")
         if mult is None:
             mult = _multiplier_from_hires_axes(hr)
-        has_speed = mult is not None and bool(hr.get("target", False))
+        # Opt in only when profile has a complete divert+axes speed setup.
+        has_speed = (
+            bool(hr.get("target", False))
+            and mult is not None
+            and (
+                isinstance(hr.get("up"), dict)
+                and isinstance(hr.get("down"), dict)
+                or hr.get("scroll_multiplier") is not None
+            )
+        )
         if has_speed and mult is not None:
             cents = int(round(float(mult) * 100))
             self.slider_hr_mult.setValue(cents)
             self.chk_hr_speed.setChecked(True)
             self._on_hr_speed_toggled(True)
         else:
+            # Orphan target:true (no axes) → treat as unsafe; keep speed OFF
+            # so next Apply clears divert.
             self.chk_hr_speed.setChecked(False)
             self._on_hr_speed_toggled(False)
-            if "target" in hr:
-                self.chk_hr_target.setChecked(bool(hr["target"]))
 
     def _build_thumbwheel(self) -> dict[str, Any]:
         divert = self.chk_tw_divert.isChecked()
@@ -1088,13 +1089,18 @@ class MainWindow(QMainWindow):
 
                 hs = dev.get("hiresscroll")
                 if isinstance(hs, dict):
-                    # D-Bus only returns bbb — no axis_multiplier. Keep
-                    # divert-speed UI state; sync mode bits only.
+                    # D-Bus only returns bbb — no axis_multiplier. Sync
+                    # hires/invert only. Never mirror orphan target:true into
+                    # a control that could re-Apply divert without Axis.
                     self.chk_hr_hires.setChecked(bool(hs.get("hires", True)))
                     self.chk_hr_invert.setChecked(bool(hs.get("invert", False)))
-                    if not self.chk_hr_speed.isChecked():
-                        self.chk_hr_target.setChecked(
-                            bool(hs.get("target", False))
+                    if hs.get("target") and not self.chk_hr_speed.isChecked():
+                        self.lbl_hr_hint.setText(
+                            "⚠ На устройстве target/divert=true. Без up/down "
+                            "Axis колесо не скроллит страницы. Нажмите "
+                            "«Применить в cfg» (скорость divert выкл.) — "
+                            "запишется безопасный target:false. "
+                            "Скорость ОС: KDE → Mouse → Scroll speed."
                         )
 
                 tw = dev.get("thumbwheel")

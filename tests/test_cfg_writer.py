@@ -23,13 +23,25 @@ def test_render_hiresscroll_fields() -> None:
     profile = {
         "device": {"name": "MX Master 3S"},
         "dpi": 1000,
-        "hiresscroll": {"hires": False, "invert": True, "target": True},
+        "hiresscroll": {"hires": False, "invert": True, "target": False},
     }
     text = CfgWriter(profile).render()
     assert "hiresscroll:" in text
     assert "hires: false;" in text
     assert "invert: true;" in text
-    assert "target: true;" in text
+    assert "target: false;" in text
+
+
+def test_render_hiresscroll_orphan_target_coerced_off() -> None:
+    """target:true without up/down must not be written (eats the wheel)."""
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "hiresscroll": {"hires": True, "invert": False, "target": True},
+    }
+    text = CfgWriter(profile).render()
+    assert "target: false;" in text
+    assert "axis_multiplier" not in text
+    assert "up =" not in text
 
 
 def test_render_hiresscroll_scroll_multiplier() -> None:

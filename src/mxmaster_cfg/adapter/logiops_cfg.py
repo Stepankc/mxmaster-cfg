@@ -312,26 +312,27 @@ class CfgWriter:
 
         if hiresscroll:
             # logiops 0.3.5: hires / invert / target (target = HID++ divert).
-            # No separate ``divert`` key in cfg. Optional up/down Axis gestures
-            # scale scroll when target:true (closest thing to Options+ scroll
-            # speed — HID++ 0x2121 has no line-speed field).
+            # SAFETY: target:true WITHOUT up/down Axis swallows the wheel
+            # (no page scroll). Only emit divert when both axes exist.
             hires = "true" if hiresscroll.get("hires", True) else "false"
             invert = "true" if hiresscroll.get("invert", False) else "false"
-            target = "true" if hiresscroll.get("target", False) else "false"
-            # Convenience: scroll_multiplier → up/down Axis when target.
             axes = _hires_axes_from_profile(hiresscroll)
+            want_target = bool(hiresscroll.get("target", False))
+            safe_divert = want_target and "up" in axes and "down" in axes
+            target = "true" if safe_divert else "false"
             parts.append("    hiresscroll:")
             parts.append("    {")
             parts.append(f"      hires: {hires};")
             parts.append(f"      invert: {invert};")
             parts.append(f"      target: {target};")
-            for side in ("up", "down"):
-                gest = axes.get(side)
-                if isinstance(gest, dict):
-                    parts.append(f"      {side} =")
-                    g_lines = _render_gesture(gest, indent="      ")
-                    g_lines[-1] = g_lines[-1] + ";"
-                    parts.extend(g_lines)
+            if safe_divert:
+                for side in ("up", "down"):
+                    gest = axes.get(side)
+                    if isinstance(gest, dict):
+                        parts.append(f"      {side} =")
+                        g_lines = _render_gesture(gest, indent="      ")
+                        g_lines[-1] = g_lines[-1] + ";"
+                        parts.extend(g_lines)
             parts.append("    };")
 
         if thumbwheel:

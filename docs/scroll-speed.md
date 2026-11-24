@@ -14,11 +14,25 @@ How “scroll speed” maps on MX Master 3S under **logiops 0.3.5** and Linux.
 
 **Do not** expect a no-op slider that pretends to change firmware line speed. Without divert, use the OS path below.
 
-## GUI (divert path)
+## Safety (Bolt / MX Master 3S)
 
-1. Enable **Скорость через divert (Axis multiplier)** — forces `target: true`.
+**`target: true` without `up`/`down` Axis gestures swallows the wheel** — pages
+do not scroll. mxmaster-cfg defaults to **divert OFF** (`target: false`,
+hi-res-only). CfgWriter **refuses** to emit orphan divert: if `target` is set
+without both axes (or `scroll_multiplier`), it writes `target: false`.
+
+If scroll suddenly dies after an Apply, check `/etc/logid.cfg` for
+`target: true` with no `up`/`down`, set `target: false`, restart `logid`, and
+move the mouse (Bolt).
+
+## GUI (experimental divert path)
+
+Default: leave **Экспериментально: скорость через divert** **unchecked**.
+
+1. Opt in only if you accept divert risk — forces `target: true` **and** axes.
 2. Set **Множитель** (0.25× … 4.00×). `1.00×` is the baseline divert scale.
-3. Click **Применить в cfg** (restarts `logid`). D-Bus `SetHires` / `SetInvert` / `SetTarget` cannot set `axis_multiplier`; `SetUp`/`SetDown` only select gesture *type*.
+3. Click **Применить в cfg** (restarts `logid`). D-Bus cannot set
+   `axis_multiplier`.
 
 Rendered cfg shape (hires on):
 

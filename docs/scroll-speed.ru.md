@@ -14,11 +14,23 @@
 
 **Не** делаем «пустой» слайдер, который ничего не меняет в прошивке. Без divert — путь ОС ниже.
 
-## GUI (путь divert)
+## Безопасность (Bolt / MX Master 3S)
 
-1. Включите **Скорость через divert (Axis multiplier)** — принудительно `target: true`.
-2. Задайте **Множитель** (0.25× … 4.00×). `1.00×` — базовая шкала divert.
-3. Нажмите **Применить в cfg** (restart `logid`). D-Bus `SetHires` / `SetInvert` / `SetTarget` не задают `axis_multiplier`; `SetUp`/`SetDown` выбирают только *тип* жеста.
+**`target: true` без жестов `up`/`down` Axis глотает колесо** — страницы не
+скроллятся. По умолчанию divert **ВЫКЛ** (`target: false`, только hi-res).
+CfgWriter **не пишет** orphan divert: при `target` без обеих осей (или
+`scroll_multiplier`) принудительно `target: false`.
+
+Если скролл пропал после Apply: в `/etc/logid.cfg` уберите `target: true` без
+`up`/`down`, `systemctl restart logid`, пошевелите мышь (Bolt).
+
+## GUI (экспериментальный divert)
+
+По умолчанию **Экспериментально: скорость через divert** — **снят**.
+
+1. Включайте только осознанно — сразу `target: true` **и** оси.
+2. **Множитель** (0.25× … 4.00×). `1.00×` — базовая шкала divert.
+3. **Применить в cfg** (restart `logid`). D-Bus не задаёт `axis_multiplier`.
 
 Пример cfg (hires вкл.):
 

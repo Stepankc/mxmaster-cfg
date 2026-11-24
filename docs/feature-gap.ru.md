@@ -43,7 +43,7 @@
 | Hi-res (`0x2121` hires) | **done** | Чекбокс → cfg / SetHires |
 | Инверсия вертикали | **done** | `invert` |
 | Divert колеса в демон | **done** | `target` |
-| **Скорость скролла** как в Options+ | **partial** | **Нет** HID++ «строк на щелчок». Ближайшее: divert + слайдер `axis_multiplier` ([scroll-speed.ru.md](scroll-speed.ru.md)). Иначе KDE/libinput |
+| **Скорость скролла** как в Options+ | **partial** | **Нет** HID++ «строк на щелчок». Эксперим. divert + `axis_multiplier` (по умолч. **ВЫКЛ** — orphan `target:true` глотает колесо). Безопасный путь: KDE/libinput ([scroll-speed.ru.md](scroll-speed.ru.md)) |
 | Ощущение smooth / ratchet | **partial** | SmartShift + hires + quirks ОС; Bolt часто только low-res |
 | UI состояния трещотки | **missing** | В бэкенде HID++ есть `GetRatchetState`; в GUI нет |
 | Произвольные up/down actions | **partial** | Путь скорости = Axis; свободный Keypress up/down в GUI нет |
