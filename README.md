@@ -10,7 +10,7 @@ button remap, and gesture button (CID `0xc3`).
 |---|---|
 | **License** | GPL-3.0-or-later |
 | **GUI** | Qt 6 / PySide6 (fits KDE / Kubuntu) |
-| **Packages** | Debian / Ubuntu family (`.deb` sketch included) |
+| **Packages** | Debian / Ubuntu family (buildable `.deb`) |
 | **Transport** | Logi Bolt (priority) + Bluetooth |
 | **Requires** | **logiops ≥ 0.3** (tested on 0.3.5) |
 
@@ -29,6 +29,8 @@ button remap, and gesture button (CID `0xc3`).
 - **Battery** % + charging (Unified Battery `0x1004` via short hidraw probe;
   UPower/sysfs when the kernel exposes it; logiops 0.3.5 D-Bus has no Battery)
 - Forward/Back **remap** and **gesture** presets (persist via `/etc/logid.cfg` + `logid` restart)
+- **Named on-disk profiles** (YAML/JSON) under `~/.config/mxmaster-cfg/profiles/` —
+  list / Save as / Load / Apply to device / Delete (not app-specific)
 - Bolt quirk hint (“wiggle the mouse”) when devices disappear after restart
 - HID++ conflict check (Solaar / OpenLogi / ratbagd)
 
@@ -59,13 +61,13 @@ More detail: [docs/install.md](docs/install.md) · [docs/run.md](docs/run.md)
 ### Helper CLI smoke
 
 ```bash
-pkexec /usr/local/libexec/mxmaster-cfg-helper status
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-dpi
-pkexec /usr/local/libexec/mxmaster-cfg-helper set-dpi --dpi 1200
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-smartshift
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-hiresscroll
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-thumbwheel
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery
+pkexec /usr/libexec/mxmaster-cfg-helper status
+pkexec /usr/libexec/mxmaster-cfg-helper get-dpi
+pkexec /usr/libexec/mxmaster-cfg-helper set-dpi --dpi 1200
+pkexec /usr/libexec/mxmaster-cfg-helper get-smartshift
+pkexec /usr/libexec/mxmaster-cfg-helper get-hiresscroll
+pkexec /usr/libexec/mxmaster-cfg-helper get-thumbwheel
+pkexec /usr/libexec/mxmaster-cfg-helper get-battery
 ```
 
 **Apply** in the GUI writes `/etc/logid.cfg` (backup `*.bak.mxmaster`) and restarts `logid`.
@@ -109,14 +111,26 @@ Engineering notes (mostly Russian): `docs/*-notes.md`, plan, spike, runbook.
 ├── scripts/install-helper.sh
 ├── run.sh
 ├── examples/profiles/
-├── packaging/debian/            # .deb sketch
+├── packaging/debian/            # buildable .deb (debian → packaging/debian)
 └── docs/
 ```
 
-## Packaging
+Profiles are stored per user in `~/.config/mxmaster-cfg/profiles/*.yaml`
+(or `.json`). The GUI can save the current settings, reload them later, and
+apply a selected profile to the device.
 
-See [packaging/README.md](packaging/README.md). Intended Depends: `logiops (>= 0.3)`,
-`policykit-1`, PySide6 packages.
+## Packaging (`.deb`)
+
+See [packaging/README.md](packaging/README.md). Depends: `logiops (>= 0.3)`,
+`policykit-1`, PySide6 packages, `python3-yaml`, `python3-jsonschema`.
+
+```bash
+sudo apt install -y debhelper dh-python pybuild-plugin-pyproject \
+  python3-setuptools python3-all python3-yaml python3-jsonschema \
+  python3-pyside6.qtwidgets dpkg-dev
+./packaging/build-deb.sh
+sudo apt install ../mxmaster-cfg_*.deb
+```
 
 ## License
 

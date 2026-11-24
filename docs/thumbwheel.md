@@ -19,8 +19,8 @@ Apply writes the `thumbwheel { … }` block through `CfgWriter`.
 ## Helper
 
 ```bash
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-thumbwheel
-pkexec /usr/local/libexec/mxmaster-cfg-helper set-thumbwheel \
+pkexec /usr/libexec/mxmaster-cfg-helper get-thumbwheel
+pkexec /usr/libexec/mxmaster-cfg-helper set-thumbwheel \
   --divert true --invert false
 ```
 

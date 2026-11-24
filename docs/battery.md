@@ -35,9 +35,9 @@ Solaar is **not** used for polling (it would compete for HID++ ownership).
 ## Helper
 
 ```bash
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery --no-hidpp-stop
-pkexec /usr/local/libexec/mxmaster-cfg-helper status   # includes battery per device
+pkexec /usr/libexec/mxmaster-cfg-helper get-battery
+pkexec /usr/libexec/mxmaster-cfg-helper get-battery --no-hidpp-stop
+pkexec /usr/libexec/mxmaster-cfg-helper status   # includes battery per device
 ```
 
 Example success payload (Bolt):

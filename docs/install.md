@@ -27,7 +27,7 @@ bash scripts/install-helper.sh
 
 This installs:
 
-- `/usr/local/libexec/mxmaster-cfg-helper`
+- `/usr/libexec/mxmaster-cfg-helper`
 - `/usr/share/polkit-1/actions/org.mxmaster.cfg.policy`
 
 Action: `org.mxmaster.cfg.helper` (`auth_admin_keep` for an active session).
@@ -49,5 +49,5 @@ On some Ubuntu/Kubuntu system Pythons you may need a venv or
 
 ```bash
 systemctl status logid --no-pager
-pkexec /usr/local/libexec/mxmaster-cfg-helper status
+pkexec /usr/libexec/mxmaster-cfg-helper status
 ```

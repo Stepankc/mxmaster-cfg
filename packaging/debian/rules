@@ -1,6 +1,5 @@
 #!/usr/bin/make -f
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Sketch only — not yet wired to a real Debian source package layout.
 
 export DH_VERBOSE = 1
 export PYBUILD_NAME = mxmaster-cfg
@@ -9,5 +8,6 @@ export PYBUILD_NAME = mxmaster-cfg
 	dh $@ --with python3 --buildsystem=pybuild
 
 override_dh_auto_test:
-	# Tests require optional display/D-Bus; skip in packaging sketch.
-	@echo "skipping tests in packaging sketch"
+	# Unit tests that need D-Bus/display stay optional; profile/cfg tests are
+	# run in CI / locally via pytest. Skip here to keep Build-Depends light.
+	@echo "skipping dh_auto_test (run: PYTHONPATH=src python3 -m pytest -q)"

@@ -37,9 +37,9 @@ Solaar для опроса **не** используем (конфликт вл�
 ## Helper
 
 ```bash
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery
-pkexec /usr/local/libexec/mxmaster-cfg-helper get-battery --no-hidpp-stop
-pkexec /usr/local/libexec/mxmaster-cfg-helper status   # батарея в каждом device
+pkexec /usr/libexec/mxmaster-cfg-helper get-battery
+pkexec /usr/libexec/mxmaster-cfg-helper get-battery --no-hidpp-stop
+pkexec /usr/libexec/mxmaster-cfg-helper status   # батарея в каждом device
 ```
 
 Пример успешного ответа (Bolt):

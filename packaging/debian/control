@@ -1,15 +1,19 @@
 Source: mxmaster-cfg
 Section: utils
 Priority: optional
-Maintainer: Stepan <stepan@example.invalid>
+Maintainer: Stepan Korobkov <stepan.korobkov@maergroup.ru>
 Build-Depends: debhelper-compat (= 13),
                dh-python,
+               pybuild-plugin-pyproject,
                python3-all,
                python3-setuptools,
                python3-yaml,
+               python3-jsonschema,
                python3-pyside6.qtwidgets | python3-pyside6
 Standards-Version: 4.6.2
-Homepage: https://example.invalid/mxmaster-cfg
+Homepage: https://github.com/Stepankc/mxmaster-cfg
+Vcs-Git: https://github.com/Stepankc/mxmaster-cfg.git
+Vcs-Browser: https://github.com/Stepankc/mxmaster-cfg
 Rules-Requires-Root: no
 
 Package: mxmaster-cfg
@@ -17,16 +21,20 @@ Architecture: all
 Depends: ${python3:Depends},
          ${misc:Depends},
          python3-yaml,
+         python3-jsonschema,
          python3-pyside6.qtwidgets | python3-pyside6,
-# logiops: prefer distro package when ≥ 0.3 with Bolt.
-# If Ubuntu/Debian package is too old, replace with our vendored/forked
-# binary package name after the hardware spike (TBD).
-         logiops (>= 0.3) | logiops-bolt-tbd
+         python3-pyside6.qtcore | python3-pyside6,
+         python3-pyside6.qtgui | python3-pyside6,
+         policykit-1,
+         logiops (>= 0.3)
 Suggests: solaar
 Description: GUI configurator for Logitech MX Master mice (via logiops)
  Qt (PySide6) frontend and profile adapter for the MX Master lineup on
- Debian/Ubuntu. Talks to logid (logiops) over D-Bus and/or writes logid.cfg.
+ Debian/Ubuntu. Talks to logid (logiops) over D-Bus via a polkit helper
+ and writes /etc/logid.cfg.
  .
- Project name TBD. Licensed GPL-3.0-or-later.
+ Named on-disk profiles live under ~/.config/mxmaster-cfg/profiles/
+ (YAML/JSON). App-specific profiles are out of scope.
  .
- Note: do not run concurrently with Solaar/OpenLogi on the same HID++ device.
+ Licensed GPL-3.0-or-later. Do not run concurrently with Solaar/OpenLogi
+ on the same HID++ device.

@@ -15,7 +15,7 @@ device:
 dpi: 1000
 
 smartshift:
-  on: true
+  "on": true   # quote key — YAML 1.1 treats bare `on` as boolean
   threshold: 30
   # torque: 50   # uncomment if device/feature exposes torque in logiops
 

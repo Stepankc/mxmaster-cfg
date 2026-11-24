@@ -1,9 +1,5 @@
-# Sketch: install paths once the Debian source layout is finalized.
-# helper/mxmaster-cfg-helper usr/libexec/
-# polkit/org.mxmaster.cfg.policy usr/share/polkit-1/actions/
-# udev/99-mx-master-hidraw.rules usr/lib/udev/rules.d/
-# examples/profiles/* usr/share/mxmaster-cfg/examples/
-#
-# Note: polkit annotate exec.path must match the installed helper path
-# (scaffold defaults to /usr/local/libexec/mxmaster-cfg-helper for
-# scripts/install-helper.sh; packaging may use /usr/libexec/ instead).
+helper/mxmaster-cfg-helper usr/libexec/
+polkit/org.mxmaster.cfg.policy usr/share/polkit-1/actions/
+packaging/mxmaster-cfg.desktop usr/share/applications/
+examples/profiles/* usr/share/mxmaster-cfg/examples/
+udev/99-mx-master-hidraw.rules usr/lib/udev/rules.d/
