@@ -545,7 +545,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(hint)
 
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage("Готово — нажмите «Обновить» (pkexec)")
+        self.statusBar().showMessage("Загрузка устройства… (pkexec)")
         self._refresh_profile_list()
 
         self._battery_timer = QTimer(self)
@@ -561,6 +561,9 @@ class MainWindow(QMainWindow):
         self._async_pump.setInterval(_ASYNC_PUMP_MS)
         self._async_pump.timeout.connect(self._drain_async_queue)
         self._async_pump.start()
+
+        # Initial load after the window is shown (same safe queue path as «Обновить»).
+        QTimer.singleShot(0, self._on_refresh)
 
     def _build_profile(self) -> dict[str, Any]:
         label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]

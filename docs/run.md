@@ -22,8 +22,9 @@ Application Menu entry (local tree): see [desktop.md](desktop.md) —
 
 ## In the GUI
 
-1. **Refresh** — `pkexec` → helper `status` (device, DPI, SmartShift, HiRes,
-   battery). Runs off the UI thread.
+1. On launch the GUI runs **Refresh** once automatically (device, DPI,
+   SmartShift, HiRes, battery via `pkexec`). The **Refresh** button remains
+   for a manual re-read. Helper work stays off the UI thread.
 2. Change DPI / SmartShift / Hi-res / remap / gestures.
 3. **Apply** — writes `/etc/logid.cfg` (backup `*.bak.mxmaster`) +
    `systemctl restart logid` (+ soft USB wake for Bolt if needed).

@@ -22,8 +22,9 @@ PYTHONPATH=src python3 -m mxmaster_cfg
 
 ## В GUI
 
-1. **Обновить** — `pkexec` → helper `status` (устройство, DPI, SmartShift,
-   HiRes, батарея). Запрос идёт вне UI-потока.
+1. При запуске GUI один раз сам делает **Обновить** (устройство, DPI,
+   SmartShift, HiRes, батарея через `pkexec`). Кнопка **Обновить** остаётся
+   для ручного перечитывания. Запрос к helper — вне UI-потока.
 2. Меняете DPI / SmartShift / Hi-res / remap / жесты.
 3. **Применить** — пишет `/etc/logid.cfg` (бэкап `*.bak.mxmaster`) +
    `systemctl restart logid` (+ soft USB wake Bolt при необходимости).
