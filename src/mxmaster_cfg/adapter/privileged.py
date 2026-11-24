@@ -249,3 +249,11 @@ def get_battery(device: int = 0, *, allow_stop_logid: bool = True) -> dict[str, 
     if not allow_stop_logid:
         argv.append("--no-hidpp-stop")
     return run_helper(argv, timeout=90.0).data
+
+
+def wake_receiver(*, wait: bool = True) -> dict[str, Any]:
+    """Soft USB wake Logi Bolt receiver; optionally wait for a D-Bus device."""
+    argv = ["wake-receiver"]
+    if not wait:
+        argv.append("--no-wait")
+    return run_helper(argv, timeout=60.0).data

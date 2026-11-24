@@ -45,9 +45,20 @@ mxmaster-cfg
 На системном Python Kubuntu иногда нужен venv или
 `--break-system-packages`. Надёжнее `./run.sh`.
 
+## Меню приложений (локальный checkout)
+
+```bash
+bash scripts/install-desktop.sh
+```
+
+Ставит user `.desktop` с запуском `./run.sh` по абсолютному пути и иконку
+`mxmaster-cfg`. См. [desktop.ru.md](desktop.ru.md). В `.deb` ярлык уже
+системный.
+
 ## Проверка
 
 ```bash
 systemctl status logid --no-pager
 pkexec /usr/libexec/mxmaster-cfg-helper status
+pkexec /usr/libexec/mxmaster-cfg-helper wake-receiver   # опционально soft wake Bolt
 ```

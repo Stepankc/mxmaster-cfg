@@ -17,14 +17,20 @@ cd /path/to/mxmaster-cfg
 PYTHONPATH=src python3 -m mxmaster_cfg
 ```
 
+Ярлык в меню приложений (локальное дерево): [desktop.ru.md](desktop.ru.md) —
+`scripts/install-desktop.sh` указывает на этот `run.sh` абсолютным путём.
+
 ## В GUI
 
-1. **Обновить** — `pkexec` → helper `status` (устройство, DPI, SmartShift, HiRes).
-2. Меняете DPI / SmartShift / Hi-res / remap / жесты.
-3. **Применить** — пишет `/etc/logid.cfg` (бэкап `*.bak.mxmaster`) +
-   `systemctl restart logid` (+ soft USB wake Bolt при необходимости).
-
-Если на Bolt `device_count: 0` — **пошевелите мышь** и снова Обновить.
+1. При запуске GUI сам читает устройство (слайдеры подтягиваются один раз).
+   Статус / батарея дальше опрашиваются ~каждые 15 с (слайдеры не затираются).
+2. **DPI / SmartShift** — слайдеры, live по D-Bus (с короткой задержкой).
+3. **Применить в cfg** пишет `/etc/logid.cfg` + restart `logid` для жестов,
+   remap, hi-res, thumb (+ soft USB wake при необходимости).
+4. Если после Apply `device_count: 0` — GUI опрашивает, пока устройство
+   вернётся; или **Разбудить ресивер**. Подробнее: [reconnect.ru.md](reconnect.ru.md).
+5. Плоская кнопка **Перечитать** в блоке устройства — только если нужно снова
+   подтянуть слайдеры с устройства.
 
 ## Dry-run cfg без применения
 

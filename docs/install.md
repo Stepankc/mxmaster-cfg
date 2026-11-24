@@ -45,9 +45,20 @@ mxmaster-cfg
 On some Ubuntu/Kubuntu system Pythons you may need a venv or
 `--break-system-packages`. Prefer `./run.sh` if unsure.
 
+## Application Menu (local checkout)
+
+```bash
+bash scripts/install-desktop.sh
+```
+
+Installs a user `.desktop` that launches `./run.sh` by absolute path and the
+`mxmaster-cfg` icon. See [desktop.md](desktop.md). The `.deb` already ships a
+system desktop entry.
+
 ## Verify
 
 ```bash
 systemctl status logid --no-pager
 pkexec /usr/libexec/mxmaster-cfg-helper status
+pkexec /usr/libexec/mxmaster-cfg-helper wake-receiver   # optional Bolt USB wake
 ```

@@ -23,6 +23,10 @@ hiresscroll:
   hires: true
   invert: false
   target: false
+  # Scroll speed is NOT a HID++ 0x2121 field. Closest logiops control:
+  # target: true + scroll_multiplier (emits up/down Axis). Else use KDE
+  # System Settings → Mouse → Scroll speed / libinput.
+  # scroll_multiplier: 1.0
 
 # Thumb wheel (HID++ 0x2150). divert=false → OS horizontal scroll.
 # No haptic field in logiops 0.3.5 schema.

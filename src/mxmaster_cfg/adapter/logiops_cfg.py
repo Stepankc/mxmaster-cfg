@@ -125,6 +125,53 @@ def _render_gesture(gesture: dict[str, Any], *, indent: str) -> list[str]:
     return lines
 
 
+def _hires_axes_from_profile(hiresscroll: dict[str, Any]) -> dict[str, Any]:
+    """Resolve ``up``/``down`` gestures for hiresscroll.
+
+    Prefer explicit ``up``/``down`` objects. Else, when ``target`` is true and
+    ``scroll_multiplier`` is set, synthesize Axis gestures (PixlOne/logiops
+    #116). HID++ HiRes Wheel ``0x2121`` only exposes mode bits (hires/invert/
+    target) plus a firmware ``multiplier`` capability used internally by
+    logiops — not a user "lines per notch" control.
+    """
+    out: dict[str, Any] = {}
+    for side in ("up", "down"):
+        gest = hiresscroll.get(side)
+        if isinstance(gest, dict):
+            out[side] = gest
+    if out:
+        return out
+    if not hiresscroll.get("target"):
+        return out
+    mult = hiresscroll.get("scroll_multiplier")
+    if mult is None:
+        return out
+    try:
+        magnitude = abs(float(mult))
+    except (TypeError, ValueError):
+        return out
+    if magnitude <= 0:
+        return out
+    hires = bool(hiresscroll.get("hires", True))
+    axis = "REL_WHEEL_HI_RES" if hires else "REL_WHEEL"
+    # Keep one decimal when possible for libconfig readability.
+    if abs(magnitude - round(magnitude)) < 1e-9:
+        mag_out: float | int = int(round(magnitude))
+    else:
+        mag_out = round(magnitude, 3)
+    out["up"] = {
+        "mode": "Axis",
+        "axis": axis,
+        "axis_multiplier": mag_out,
+    }
+    out["down"] = {
+        "mode": "Axis",
+        "axis": axis,
+        "axis_multiplier": -mag_out,
+    }
+    return out
+
+
 def _render_thumbwheel(thumb: dict[str, Any]) -> list[str]:
     """Render logiops ``thumbwheel: { … };`` (feature 0x2150).
 
@@ -265,15 +312,27 @@ class CfgWriter:
 
         if hiresscroll:
             # logiops 0.3.5: hires / invert / target (target = HID++ divert).
-            # No separate ``divert`` key in cfg.
+            # SAFETY: target:true WITHOUT up/down Axis swallows the wheel
+            # (no page scroll). Only emit divert when both axes exist.
             hires = "true" if hiresscroll.get("hires", True) else "false"
             invert = "true" if hiresscroll.get("invert", False) else "false"
-            target = "true" if hiresscroll.get("target", False) else "false"
+            axes = _hires_axes_from_profile(hiresscroll)
+            want_target = bool(hiresscroll.get("target", False))
+            safe_divert = want_target and "up" in axes and "down" in axes
+            target = "true" if safe_divert else "false"
             parts.append("    hiresscroll:")
             parts.append("    {")
             parts.append(f"      hires: {hires};")
             parts.append(f"      invert: {invert};")
             parts.append(f"      target: {target};")
+            if safe_divert:
+                for side in ("up", "down"):
+                    gest = axes.get(side)
+                    if isinstance(gest, dict):
+                        parts.append(f"      {side} =")
+                        g_lines = _render_gesture(gest, indent="      ")
+                        g_lines[-1] = g_lines[-1] + ";"
+                        parts.extend(g_lines)
             parts.append("    };")
 
         if thumbwheel:

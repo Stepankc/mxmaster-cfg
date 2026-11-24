@@ -6,7 +6,8 @@ Feature `HiresScroll` / HID++ `0x2121` via logiops.
 
 ## GUI
 
-Checkboxes: **hires**, **invert**, **target / divert**.
+Checkboxes: **hires**, **invert**, **target / divert**, plus optional
+**divert scroll speed** (Axis `axis_multiplier` slider).
 
 Refresh reads `HiresScroll.GetConfig` → `bbb` (hires, invert, target).
 Apply writes the `hiresscroll { … }` block through `CfgWriter`.
@@ -16,6 +17,8 @@ There is **no** separate `divert` key in logiops 0.3.5 cfg: HID++
 
 Unlike SmartShift, unset `getConfig` returns defaults `{true, false, false}`
 (not a tri-state).
+
+**Scroll speed** is not a `0x2121` mode bit — see [scroll-speed.md](scroll-speed.md).
 
 ## Helper
 

@@ -60,10 +60,22 @@
     "hiresscroll": {
       "type": "object",
       "additionalProperties": false,
+      "description": "HID++ 0x2121 HiresScroll. No firmware line-scroll speed; use target+Axis multiplier or OS/libinput.",
       "properties": {
         "hires": { "type": "boolean" },
         "invert": { "type": "boolean" },
-        "target": { "type": "boolean" }
+        "target": {
+          "type": "boolean",
+          "description": "HID++ Mode::Target divert; required for up/down Axis speed control"
+        },
+        "scroll_multiplier": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 8,
+          "description": "Convenience: when target=true, CfgWriter emits up/down Axis with ±this multiplier"
+        },
+        "up": { "$ref": "#/$defs/thumbGesture" },
+        "down": { "$ref": "#/$defs/thumbGesture" }
       }
     },
     "thumbwheel": {
