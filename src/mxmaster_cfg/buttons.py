@@ -290,7 +290,7 @@ BUTTON_ACTION_PRESETS: list[tuple[str, str, dict[str, Any] | None]] = [
     ("disable", "Отключить (None)", {"type": "None"}),
     (
         ACTION_KEY_CUSTOM,
-        "Keypress (свой… / custom)",
+        "Keypress (записать… / record)",
         {"type": "Keypress", "keys": []},
     ),
     (

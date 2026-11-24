@@ -21,7 +21,7 @@ Each CID has an **action picker**:
 |--------|---------|
 | Default (OS / firmware) | omit from `buttons:` |
 | Disable | `type: "None"` |
-| **Keypress (custom)** | Free-form `KEY_*` + modifiers (`Ctrl+X`, `KEY_LEFTMETA + KEY_TAB`, …). Completer offers common codes. Unknown Keypress from cfg/profile loads here and round-trips. |
+| **Keypress (record)** | Press **Record / Записать**, then play the chord on the keyboard. Modifiers + key are captured via Qt and stored as `Keypress` `KEY_*`. Unknown Keypress from cfg/profile loads here; re-record to replace. |
 | Keypress shortcuts | Common presets (F/B, Super, Alt+Tab, Ctrl+C/V/Z, media…) |
 | CycleDPI | `CycleDPI` with 400…1600 |
 | ChangeDPI ±50 | `ChangeDPI` + `inc` |
@@ -34,11 +34,16 @@ Gesture button (`0xc3`): when set to **Gesture mode**, Up / Down / Left / Right 
 presets stay editable (same as before). Mode button (`0xc4`) defaults to
 **ToggleSmartShift**.
 
-### Free-form Keypress
+### Keypress capture
 
-Type keys separated by `+`, comma, or space. Bare names are normalized to
-`KEY_*` (e.g. `ctrl` → `KEY_CTRL` — prefer `KEY_LEFTCTRL`). Modifiers are
-ordinary keys in the list (logiops chord).
+1. Choose **Keypress (записать… / record)**.
+2. Click **Записать** — the row shows “press keys…”.
+3. Hold modifiers and press the main key (e.g. Ctrl+X). The chord appears as
+   `KEY_LEFTCTRL + KEY_X` and is written on Apply as a normal Keypress action.
+4. **Esc** (or **Отмена**) cancels listening and keeps the previous chord.
+5. **Очистить** clears the chord. Click **Записать** again to re-capture.
+
+Typing `KEY_*` names by hand is not the primary path.
 
 ### ChangeHost
 
@@ -54,5 +59,6 @@ Remaps are written only via **Apply → `/etc/logid.cfg` + `logid` restart**
 
 Named on-disk profiles store the full `buttons:` list.
 
-Catalogue: `src/mxmaster_cfg/buttons.py`. Example:
+Catalogue: `src/mxmaster_cfg/buttons.py`, capture map
+`src/mxmaster_cfg/key_capture.py`. Example:
 `examples/profiles/mx-master-3s-default.yaml`.

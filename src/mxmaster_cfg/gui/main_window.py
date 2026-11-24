@@ -9,11 +9,10 @@ import time
 from queue import Empty, SimpleQueue
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, QTimer, QStringListModel
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QCompleter,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -40,18 +39,16 @@ from mxmaster_cfg.buttons import (
     ACTION_GESTURES,
     ACTION_KEY_CUSTOM,
     BUTTON_ACTION_PRESETS,
-    COMMON_KEY_NAMES,
     REMAPPABLE_BUTTONS,
     action_signature,
     button_label,
     buttons_from_profile,
     change_host_preset_id,
-    format_keys_text,
     match_button_preset,
     normalize_host,
-    parse_keys_text,
     resolve_button_action,
 )
+from mxmaster_cfg.gui.key_capture_widget import KeyCaptureBar
 from mxmaster_cfg.adapter.plasma_scroll import (
     SCROLL_FACTOR_DEFAULT,
     SCROLL_FACTOR_MAX,
@@ -620,9 +617,8 @@ class MainWindow(QMainWindow):
         remap_box = QGroupBox("Remap кнопок (CID)")
         remap_form = QFormLayout(remap_box)
         self.button_combos: dict[int, QComboBox] = {}
-        self.button_key_edits: dict[int, QLineEdit] = {}
+        self.button_key_captures: dict[int, KeyCaptureBar] = {}
         self.button_host_edits: dict[int, QLineEdit] = {}
-        self._key_completer_model = QStringListModel(list(COMMON_KEY_NAMES))
         for info in REMAPPABLE_BUTTONS:
             combo = QComboBox()
             for preset_id, preset_label, _action in BUTTON_ACTION_PRESETS:
@@ -641,20 +637,8 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(default_idx)
             combo.currentIndexChanged.connect(self._on_button_action_changed)
 
-            key_edit = QLineEdit()
-            key_edit.setPlaceholderText(
-                "KEY_LEFTCTRL + KEY_X  (или Ctrl+X)"
-            )
-            key_edit.setToolTip(
-                "Свободный Keypress: KEY_* через + / запятую / пробел. "
-                "Модификаторы: KEY_LEFTCTRL, KEY_LEFTALT, KEY_LEFTSHIFT, "
-                "KEY_LEFTMETA…"
-            )
-            completer = QCompleter(self._key_completer_model, key_edit)
-            completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            completer.setFilterMode(Qt.MatchFlag.MatchContains)
-            key_edit.setCompleter(completer)
-            key_edit.setVisible(False)
+            key_cap = KeyCaptureBar()
+            key_cap.setVisible(False)
 
             host_edit = QLineEdit()
             host_edit.setPlaceholderText("1 / 2 / 3 / next / prev")
@@ -670,17 +654,18 @@ class MainWindow(QMainWindow):
             row_l.setContentsMargins(0, 0, 0, 0)
             row_l.setSpacing(4)
             row_l.addWidget(combo)
-            row_l.addWidget(key_edit)
+            row_l.addWidget(key_cap)
             row_l.addWidget(host_edit)
 
             self.button_combos[info.cid] = combo
-            self.button_key_edits[info.cid] = key_edit
+            self.button_key_captures[info.cid] = key_cap
             self.button_host_edits[info.cid] = host_edit
             remap_form.addRow(button_label(info, lang="ru") + ":", row)
         self.lbl_remap_hint = QLabel(
             "По умолчанию = не писать в cfg (firmware/ОС). "
             "Отключить = type None. "
-            "Keypress (свой) — произвольные KEY_* + модификаторы. "
+            "Keypress (записать) — «Записать», затем chord на клавиатуре "
+            "(Esc = отмена). "
             "ChangeHost — канал Easy-Switch (1…3 / next / prev). "
             "Жесты — только для 0xc3. Persist: «Применить в cfg»."
         )
@@ -869,10 +854,14 @@ class MainWindow(QMainWindow):
         for info in REMAPPABLE_BUTTONS:
             cid = info.cid
             preset = self._selected_button_preset(cid)
-            key_edit = self.button_key_edits.get(cid)
+            key_cap = self.button_key_captures.get(cid)
             host_edit = self.button_host_edits.get(cid)
-            if key_edit is not None:
-                key_edit.setVisible(preset == ACTION_KEY_CUSTOM)
+            if key_cap is not None:
+                show = preset == ACTION_KEY_CUSTOM
+                key_cap.setVisible(show)
+                if not show and key_cap.is_listening():
+                    # Leaving custom preset stops listen; keep current chord.
+                    key_cap.set_keys(key_cap.keys())
             if host_edit is not None:
                 host_edit.setVisible(preset == ACTION_CHANGE_HOST_CUSTOM)
 
@@ -889,10 +878,10 @@ class MainWindow(QMainWindow):
         return out
 
     def _custom_keys_for_cid(self, cid: int) -> list[str]:
-        edit = self.button_key_edits.get(cid)
-        if edit is None:
+        cap = self.button_key_captures.get(cid)
+        if cap is None:
             return []
-        return parse_keys_text(edit.text())
+        return cap.keys()
 
     def _custom_host_for_cid(self, cid: int) -> int | str:
         edit = self.button_host_edits.get(cid)
@@ -2046,7 +2035,7 @@ class MainWindow(QMainWindow):
                 combo = self.button_combos.get(info.cid)
                 if combo is None:
                     continue
-                key_edit = self.button_key_edits.get(info.cid)
+                key_cap = self.button_key_captures.get(info.cid)
                 host_edit = self.button_host_edits.get(info.cid)
                 if info.cid in configured:
                     act = configured[info.cid]
@@ -2056,10 +2045,8 @@ class MainWindow(QMainWindow):
                     preset_id = ACTION_DEFAULT
 
                 if preset_id == ACTION_KEY_CUSTOM and isinstance(act, dict):
-                    if key_edit is not None:
-                        key_edit.setText(
-                            format_keys_text(act.get("keys") or [])
-                        )
+                    if key_cap is not None:
+                        key_cap.set_keys(list(act.get("keys") or []))
                 if (
                     preset_id
                     in {
