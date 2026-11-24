@@ -57,6 +57,11 @@ RECONNECT_MAX_POLLS = 30  # ~60 s
 # Drain worker results on the GUI thread (never touch QWidgets from workers).
 _ASYNC_PUMP_MS = 50
 DPI_STEP = 50
+# Scroll multiplier stored as centi-units (100 = 1.0×) for integer slider.
+SCROLL_MULT_STEP = 25  # 0.25×
+SCROLL_MULT_MIN = 25  # 0.25×
+SCROLL_MULT_MAX = 400  # 4.00×
+SCROLL_MULT_DEFAULT = 100  # 1.00×
 
 
 class _ValueSlider(QWidget):
@@ -70,10 +75,14 @@ class _ValueSlider(QWidget):
         *,
         step: int = 1,
         suffix: str = "",
+        display_scale: float = 1.0,
+        display_decimals: int = 0,
     ) -> None:
         super().__init__()
         self._step = max(1, int(step))
         self._suffix = suffix
+        self._display_scale = float(display_scale) if display_scale else 1.0
+        self._display_decimals = max(0, int(display_decimals))
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -97,7 +106,13 @@ class _ValueSlider(QWidget):
         return max(self.slider.minimum(), min(self.slider.maximum(), snapped))
 
     def _sync_label(self, value: int) -> None:
-        self.lbl.setText("%s%s" % (self._snap(value), self._suffix))
+        snapped = self._snap(value)
+        if self._display_scale != 1.0:
+            shown = snapped / self._display_scale
+            fmt = "%%.%df%%s" % self._display_decimals
+            self.lbl.setText(fmt % (shown, self._suffix))
+        else:
+            self.lbl.setText("%s%s" % (snapped, self._suffix))
 
     def value(self) -> int:
         return self._snap(int(self.slider.value()))
@@ -253,6 +268,24 @@ def _gesture_actions_from_profile(profile: dict[str, Any]) -> dict[str, dict[str
             if isinstance(direction, str) and isinstance(nested, dict):
                 out[direction] = nested
     return out
+
+
+def _multiplier_from_hires_axes(hr: dict[str, Any]) -> float | None:
+    """Best-effort |axis_multiplier| from explicit up/down Axis gestures."""
+    for side in ("up", "down"):
+        gest = hr.get(side)
+        if not isinstance(gest, dict):
+            continue
+        if gest.get("mode") != "Axis":
+            continue
+        raw = gest.get("axis_multiplier")
+        if raw is None:
+            continue
+        try:
+            return abs(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _match_thumb_scroll_preset(thumb: dict[str, Any]) -> int:
@@ -439,8 +472,8 @@ class MainWindow(QMainWindow):
         ss_form.addRow(self.lbl_ss_torque_hint)
         layout.addWidget(ss_box)
 
-        # --- HiRes Wheel (feature 0x2121) ---
-        hr_box = QGroupBox("Hi-res scroll (HiresScroll / 0x2121)")
+        # --- HiRes Wheel (feature 0x2121) + divert scroll speed ---
+        hr_box = QGroupBox("Hi-res scroll / скорость (HiresScroll / 0x2121)")
         hr_form = QFormLayout(hr_box)
         self.chk_hr_hires = QCheckBox("Hi-res (высокое разрешение колеса)")
         self.chk_hr_hires.setChecked(True)
@@ -455,19 +488,48 @@ class MainWindow(QMainWindow):
         self.chk_hr_target.setChecked(False)
         self.chk_hr_target.setToolTip(
             "logiops hiresscroll.target = HID++ divert (Mode::Target). "
-            "При true события колеса уходят в logiops (SetUp/SetDown); "
-            "обычно оставляйте выкл. для обычного скролла."
+            "Нужен для Axis-множителя скорости; без up/down скролл может "
+            "пропасть."
+        )
+        self.chk_hr_speed = QCheckBox(
+            "Скорость через divert (Axis multiplier)"
+        )
+        self.chk_hr_speed.setChecked(False)
+        self.chk_hr_speed.setToolTip(
+            "Включает target + up/down Axis в cfg (logiops #116). "
+            "HID++ 0x2121 не даёт «lines per notch» как Options+ — это "
+            "ближайший реальный контроль. Без divert скорость только в "
+            "KDE/libinput."
+        )
+        self.slider_hr_mult = _ValueSlider(
+            SCROLL_MULT_MIN,
+            SCROLL_MULT_MAX,
+            SCROLL_MULT_DEFAULT,
+            step=SCROLL_MULT_STEP,
+            suffix="×",
+            display_scale=100.0,
+            display_decimals=2,
+        )
+        self.slider_hr_mult.setEnabled(False)
+        self.slider_hr_mult.setToolTip(
+            "axis_multiplier для REL_WHEEL(_HI_RES). 1.00× = базовая "
+            "шкала divert; <1 медленнее, >1 быстрее. Пишется через "
+            "«Применить в cfg» (D-Bus не задаёт multiplier)."
         )
         self.lbl_hr_state = QLabel("D-Bus: —")
         self.lbl_hr_state.setStyleSheet("color: #555;")
         self.lbl_hr_hint = QLabel(
-            "В cfg: hires / invert / target. Отдельного поля divert в logiops "
-            "0.3.5 нет — target и есть divert."
+            "Firmware 0x2121: только hires / invert / target (+ capability "
+            "multiplier внутри logiops). Скорость «как в Options+» без divert "
+            "— System Settings → Mouse & Touchpad → Mouse → Scroll speed "
+            "(KDE) / libinput. Divert+Axis — см. docs/scroll-speed.md."
         )
         self.lbl_hr_hint.setWordWrap(True)
         hr_form.addRow(self.chk_hr_hires)
         hr_form.addRow(self.chk_hr_invert)
         hr_form.addRow(self.chk_hr_target)
+        hr_form.addRow(self.chk_hr_speed)
+        hr_form.addRow("Множитель:", self.slider_hr_mult)
         hr_form.addRow(self.lbl_hr_state)
         hr_form.addRow(self.lbl_hr_hint)
         layout.addWidget(hr_box)
@@ -584,7 +646,8 @@ class MainWindow(QMainWindow):
         self.btn_apply.setDefault(True)
         self.btn_apply.setToolTip(
             "Записать полный профиль в /etc/logid.cfg и restart logid "
-            "(жесты, remap, hi-res, thumb). DPI/SmartShift уже уходят live."
+            "(жесты, remap, hi-res, scroll Axis, thumb). "
+            "DPI/SmartShift уже уходят live."
         )
         self.btn_apply.clicked.connect(self._on_apply)
         buttons.addWidget(self.btn_apply)
@@ -604,10 +667,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
 
         hint = QLabel(
-            "Слайдеры DPI / SmartShift применяются live по D-Bus (с короткой "
-            "задержкой). «Применить в cfg» нужно для жестов, remap, hi-res и "
-            "thumb (restart logid). Статус и батарея обновляются сами ~каждые "
-            "15 с. Профили — YAML/JSON на диске (не app-specific)."
+            "Слайдеры DPI / SmartShift — live D-Bus. Скорость скролла "
+            "(divert + Axis) и жесты/remap/hi-res/thumb — через "
+            "«Применить в cfg» (restart logid). Без divert скорость — в "
+            "KDE System Settings. Статус ~15 с. Профили на диске "
+            "(не app-specific)."
         )
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -653,6 +717,9 @@ class MainWindow(QMainWindow):
             lambda _v: self._schedule_live_apply()
         )
         self.chk_ss_on.toggled.connect(lambda _v: self._schedule_live_apply())
+        self.chk_hr_speed.toggled.connect(self._on_hr_speed_toggled)
+        self.chk_hr_hires.toggled.connect(self._on_hr_hires_for_speed)
+        self.chk_hr_target.toggled.connect(self._on_hr_target_toggled)
 
         # Initial load after the window is shown (sync sliders from device once).
         QTimer.singleShot(0, lambda: self._on_refresh(sync_controls=True))
@@ -692,6 +759,7 @@ class MainWindow(QMainWindow):
             smartshift["torque"] = int(self.slider_ss_torque.value())
 
         thumbwheel = self._build_thumbwheel()
+        hiresscroll = self._build_hiresscroll()
 
         return {
             "schema_version": 1,
@@ -703,11 +771,7 @@ class MainWindow(QMainWindow):
             "device": {"name": "MX Master 3S", "family": "mx-master-3s"},
             "dpi": dpi,
             "smartshift": smartshift,
-            "hiresscroll": {
-                "hires": self.chk_hr_hires.isChecked(),
-                "invert": self.chk_hr_invert.isChecked(),
-                "target": self.chk_hr_target.isChecked(),
-            },
+            "hiresscroll": hiresscroll,
             "thumbwheel": thumbwheel,
             "buttons": [
                 {
@@ -725,6 +789,65 @@ class MainWindow(QMainWindow):
                 },
             ],
         }
+
+    def _scroll_multiplier(self) -> float:
+        return max(0.05, float(self.slider_hr_mult.value()) / 100.0)
+
+    def _build_hiresscroll(self) -> dict[str, Any]:
+        """Build hiresscroll profile; divert+multiplier when speed control on."""
+        speed_on = self.chk_hr_speed.isChecked()
+        target = True if speed_on else self.chk_hr_target.isChecked()
+        hr: dict[str, Any] = {
+            "hires": self.chk_hr_hires.isChecked(),
+            "invert": self.chk_hr_invert.isChecked(),
+            "target": target,
+        }
+        if speed_on:
+            # CfgWriter expands scroll_multiplier → up/down Axis.
+            hr["scroll_multiplier"] = round(self._scroll_multiplier(), 3)
+        return hr
+
+    def _on_hr_speed_toggled(self, checked: bool) -> None:
+        self.slider_hr_mult.setEnabled(bool(checked))
+        if checked:
+            blocked = self.chk_hr_target.blockSignals(True)
+            self.chk_hr_target.setChecked(True)
+            self.chk_hr_target.blockSignals(blocked)
+            self.chk_hr_target.setEnabled(False)
+        else:
+            self.chk_hr_target.setEnabled(True)
+
+    def _on_hr_hires_for_speed(self, _checked: bool) -> None:
+        # Axis choice (REL_WHEEL vs HI_RES) follows hires at Apply time.
+        return
+
+    def _on_hr_target_toggled(self, checked: bool) -> None:
+        if not checked and self.chk_hr_speed.isChecked():
+            # Keep divert on while speed control is active.
+            blocked = self.chk_hr_target.blockSignals(True)
+            self.chk_hr_target.setChecked(True)
+            self.chk_hr_target.blockSignals(blocked)
+
+    def _apply_hiresscroll_controls(self, hr: dict[str, Any]) -> None:
+        """Sync GUI hi-res / speed widgets from a profile dict."""
+        if "hires" in hr:
+            self.chk_hr_hires.setChecked(bool(hr["hires"]))
+        if "invert" in hr:
+            self.chk_hr_invert.setChecked(bool(hr["invert"]))
+        mult = hr.get("scroll_multiplier")
+        if mult is None:
+            mult = _multiplier_from_hires_axes(hr)
+        has_speed = mult is not None and bool(hr.get("target", False))
+        if has_speed and mult is not None:
+            cents = int(round(float(mult) * 100))
+            self.slider_hr_mult.setValue(cents)
+            self.chk_hr_speed.setChecked(True)
+            self._on_hr_speed_toggled(True)
+        else:
+            self.chk_hr_speed.setChecked(False)
+            self._on_hr_speed_toggled(False)
+            if "target" in hr:
+                self.chk_hr_target.setChecked(bool(hr["target"]))
 
     def _build_thumbwheel(self) -> dict[str, Any]:
         divert = self.chk_tw_divert.isChecked()
@@ -831,6 +954,8 @@ class MainWindow(QMainWindow):
         if self.slider_ss_threshold.slider.isSliderDown():
             return
         if self.slider_ss_torque.slider.isSliderDown():
+            return
+        if self.slider_hr_mult.slider.isSliderDown():
             return
 
         def _ok(data: dict[str, Any]) -> None:
@@ -963,9 +1088,14 @@ class MainWindow(QMainWindow):
 
                 hs = dev.get("hiresscroll")
                 if isinstance(hs, dict):
+                    # D-Bus only returns bbb — no axis_multiplier. Keep
+                    # divert-speed UI state; sync mode bits only.
                     self.chk_hr_hires.setChecked(bool(hs.get("hires", True)))
                     self.chk_hr_invert.setChecked(bool(hs.get("invert", False)))
-                    self.chk_hr_target.setChecked(bool(hs.get("target", False)))
+                    if not self.chk_hr_speed.isChecked():
+                        self.chk_hr_target.setChecked(
+                            bool(hs.get("target", False))
+                        )
 
                 tw = dev.get("thumbwheel")
                 if isinstance(tw, dict):
@@ -1128,7 +1258,8 @@ class MainWindow(QMainWindow):
                 f"DPI: {profile.get('dpi')}\n"
                 f"SmartShift: on={ss.get('on')} threshold={ss.get('threshold')}\n"
                 f"HiRes: hires={hr.get('hires')} invert={hr.get('invert')} "
-                f"target={hr.get('target')}\n"
+                f"target={hr.get('target')} "
+                f"mult={hr.get('scroll_multiplier', '—')}\n"
                 f"ThumbWheel: divert={tw.get('divert')} invert={tw.get('invert')}\n"
                 f"Жесты: CID 0xc3 ({len(gestures)} направлений)\n"
                 f"devices: {devices}\n"
@@ -1376,12 +1507,7 @@ class MainWindow(QMainWindow):
 
             hr = profile.get("hiresscroll") or {}
             if isinstance(hr, dict):
-                if "hires" in hr:
-                    self.chk_hr_hires.setChecked(bool(hr["hires"]))
-                if "invert" in hr:
-                    self.chk_hr_invert.setChecked(bool(hr["invert"]))
-                if "target" in hr:
-                    self.chk_hr_target.setChecked(bool(hr["target"]))
+                self._apply_hiresscroll_controls(hr)
 
             tw = profile.get("thumbwheel") or {}
             if isinstance(tw, dict):

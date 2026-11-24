@@ -32,6 +32,63 @@ def test_render_hiresscroll_fields() -> None:
     assert "target: true;" in text
 
 
+def test_render_hiresscroll_scroll_multiplier() -> None:
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "hiresscroll": {
+            "hires": True,
+            "invert": False,
+            "target": True,
+            "scroll_multiplier": 1.5,
+        },
+    }
+    text = CfgWriter(profile).render()
+    assert "target: true;" in text
+    assert "up =" in text
+    assert "down =" in text
+    assert 'axis: "REL_WHEEL_HI_RES";' in text
+    assert "axis_multiplier: 1.5;" in text
+    assert "axis_multiplier: -1.5;" in text
+
+
+def test_render_hiresscroll_multiplier_ignored_without_target() -> None:
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "hiresscroll": {
+            "hires": True,
+            "target": False,
+            "scroll_multiplier": 2,
+        },
+    }
+    text = CfgWriter(profile).render()
+    assert "target: false;" in text
+    assert "axis_multiplier" not in text
+
+
+def test_render_hiresscroll_explicit_up_down() -> None:
+    profile = {
+        "device": {"name": "MX Master 3S"},
+        "hiresscroll": {
+            "hires": False,
+            "target": True,
+            "up": {
+                "mode": "Axis",
+                "axis": "REL_WHEEL",
+                "axis_multiplier": 2,
+            },
+            "down": {
+                "mode": "Axis",
+                "axis": "REL_WHEEL",
+                "axis_multiplier": -2,
+            },
+        },
+    }
+    text = CfgWriter(profile).render()
+    assert 'axis: "REL_WHEEL";' in text
+    assert "axis_multiplier: 2;" in text
+    assert "axis_multiplier: -2;" in text
+
+
 def test_render_thumbwheel_divert_invert_and_axis() -> None:
     profile = {
         "device": {"name": "MX Master 3S"},
