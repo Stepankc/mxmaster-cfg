@@ -23,9 +23,10 @@
       записи /etc/logid.cfg.
     </message>
     <defaults>
+      <!-- Fallback when 10-mxmaster-cfg.rules does not apply (remote / non-admin). -->
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <!-- keep credentials briefly so Apply / Refresh don't re-prompt every click -->
+      <!-- Keep for rapid Apply/Refresh if rules absent; ~5 min only — see rules. -->
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
     <!-- Packaged path; install-helper.sh also installs here. -->

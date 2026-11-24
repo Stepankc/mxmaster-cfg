@@ -14,8 +14,10 @@ From `debian/control`:
 - `python3-yaml`, `python3-jsonschema`
 - `policykit-1` (`pkexec`)
 
-Helper + polkit policy are **required** (stock logiops D-Bus policy is root-only).
-Packaged helper path: `/usr/libexec/mxmaster-cfg-helper`.
+Helper + polkit policy/rules are **required** (stock logiops D-Bus policy is
+root-only). Packaged helper path: `/usr/libexec/mxmaster-cfg-helper`.
+Active local `sudo`/`admin` sessions get passwordless helper access via
+`10-mxmaster-cfg.rules` (status polling must not re-prompt every ~5 minutes).
 
 ## Build
 
@@ -49,6 +51,7 @@ The package installs:
 | `/usr/bin/mxmaster-cfg` | GUI entry point (setuptools script) |
 | `/usr/libexec/mxmaster-cfg-helper` | polkit helper |
 | `/usr/share/polkit-1/actions/org.mxmaster.cfg.policy` | polkit action |
+| `/usr/share/polkit-1/rules.d/10-mxmaster-cfg.rules` | session YES for local sudo/admin |
 | `/usr/share/applications/mxmaster-cfg.desktop` | desktop entry (Name: MX Master Config) |
 | `/usr/share/icons/hicolor/scalable/apps/mxmaster-cfg.svg` | app icon |
 | `/usr/share/mxmaster-cfg/examples/` | example profiles |
@@ -66,3 +69,4 @@ Named user profiles remain under `~/.config/mxmaster-cfg/profiles/` (not package
 | `../udev/99-mx-master-hidraw.rules` | hidraw + uinput |
 | `../systemd/NOTES.md` | system `logid` vs user units |
 | `../polkit/org.mxmaster.cfg.policy` | source policy (→ `/usr/libexec`) |
+| `../polkit/10-mxmaster-cfg.rules` | source rules (active local admin → YES) |

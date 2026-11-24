@@ -18,7 +18,7 @@ sudo apt install -y \
 ## Установка привилегированного helper
 
 D-Bus logiops из коробки — **только root**. GUI не ходит на system bus
-напрямую; вызывает `helper/mxmaster-cfg-helper` через polkit.
+напрямую; вызывает `helper/mxmaster-cfg-helper` через polkit (`pkexec`).
 
 ```bash
 cd /path/to/mxmaster-cfg
@@ -29,10 +29,23 @@ bash scripts/install-helper.sh
 
 - `/usr/libexec/mxmaster-cfg-helper`
 - `/usr/share/polkit-1/actions/org.mxmaster.cfg.policy`
+- `/usr/share/polkit-1/rules.d/10-mxmaster-cfg.rules`
 
-Action: `org.mxmaster.cfg.helper` (`auth_admin_keep` для активной сессии).
+### Как работает аутентификация
 
-После обновления helper перезапустите скрипт.
+- Action id: `org.mxmaster.cfg.helper`.
+- Для **активной локальной** сессии пользователя из группы **`sudo`** или
+  **`admin`** (обычный вход на Kubuntu) rules-файл возвращает **YES** — без
+  диалога пароля на опрос статуса, Apply и wake. Графический логин уже
+  аутентифицировал сессию.
+- Иначе срабатывает fallback `auth_admin` / `auth_admin_keep` (~5 минут keep).
+  Из‑за короткого keep GUI раньше снова спрашивал пароль каждые несколько
+  минут, пока не было rules-файла.
+- Удалённые / неактивные / не-admin субъекты по-прежнему требуют пароль admin.
+
+После обновления helper или polkit перезапустите скрипт. Rules подхватываются
+автоматически; если пароль всё ещё спрашивают — один раз выйдите/войдите или
+перезагрузитесь.
 
 ## Опционально: editable install
 

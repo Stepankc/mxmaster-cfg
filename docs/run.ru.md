@@ -20,6 +20,16 @@ PYTHONPATH=src python3 -m mxmaster_cfg
 Ярлык в меню приложений (локальное дерево): [desktop.ru.md](desktop.ru.md) —
 `scripts/install-desktop.sh` указывает на этот `run.sh` абсолютным путём.
 
+## Привилегированный helper / пароль
+
+Статус, live DPI/SmartShift, Apply и wake идут через `pkexec` →
+`mxmaster-cfg-helper`. После `scripts/install-helper.sh` (или `.deb`) активная
+локальная сессия `sudo`/`admin` **не** получает диалог пароля на каждый опрос
+раз в 15 с — см. [install.ru.md](install.ru.md#как-работает-аутентификация).
+
+Если пароль всё ещё спрашивают каждые несколько минут — переустановите helper
+(чтобы появился `10-mxmaster-cfg.rules`) и один раз выйдите/войдите.
+
 ## В GUI
 
 1. При запуске GUI сам читает устройство (слайдеры подтягиваются один раз).
