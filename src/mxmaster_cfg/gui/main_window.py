@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from queue import Empty, SimpleQueue
 from typing import Any, Callable
@@ -30,6 +31,14 @@ from PySide6.QtWidgets import (
 
 from mxmaster_cfg.adapter.logiops_cfg import CfgWriter
 from mxmaster_cfg.adapter.logiops_dbus import CID_BACK, CID_FORWARD, CID_GESTURE
+from mxmaster_cfg.adapter.plasma_scroll import (
+    SCROLL_FACTOR_DEFAULT,
+    SCROLL_FACTOR_MAX,
+    SCROLL_FACTOR_MIN,
+    apply_scroll_factor,
+    list_logitech_scroll_targets,
+    primary_scroll_factor,
+)
 from mxmaster_cfg.adapter.privileged import (
     PrivilegedHelperError,
     apply_cfg_text,
@@ -51,13 +60,20 @@ from mxmaster_cfg.profiles import (
 STATUS_POLL_MS = 15_000
 # Debounce live D-Bus apply after slider / checkbox changes.
 LIVE_DEBOUNCE_MS = 450
+# Debounce Plasma ScrollFactor writes (user-level, no pkexec).
+PLASMA_SCROLL_DEBOUNCE_MS = 200
 # After apply-cfg with device_count=0, poll until Bolt reappears.
 RECONNECT_POLL_MS = 2_000
 RECONNECT_MAX_POLLS = 30  # ~60 s
 # Drain worker results on the GUI thread (never touch QWidgets from workers).
 _ASYNC_PUMP_MS = 50
 DPI_STEP = 50
-# Scroll multiplier stored as centi-units (100 = 1.0×) for integer slider.
+# Plasma ScrollFactor as centi-units (100 = 1.00×), DPI-like slider.
+PLASMA_SCROLL_STEP = 5  # 0.05×
+PLASMA_SCROLL_MIN = int(round(SCROLL_FACTOR_MIN * 100))  # 10
+PLASMA_SCROLL_MAX = int(round(SCROLL_FACTOR_MAX * 100))  # 200
+PLASMA_SCROLL_DEFAULT = int(round(SCROLL_FACTOR_DEFAULT * 100))  # 100
+# Divert Axis multiplier (experimental) as centi-units.
 SCROLL_MULT_STEP = 25  # 0.25×
 SCROLL_MULT_MIN = 25  # 0.25×
 SCROLL_MULT_MAX = 400  # 4.00×
@@ -444,14 +460,48 @@ class MainWindow(QMainWindow):
         dpi_form.addRow("Целевой DPI:", self.slider_dpi)
         layout.addWidget(dpi_box)
 
+        # --- Scroll speed (Plasma ScrollFactor — safe, no divert) ---
+        scroll_box = QGroupBox("Скорость скролла (Plasma / libinput)")
+        scroll_form = QFormLayout(scroll_box)
+        self.slider_plasma_scroll = _ValueSlider(
+            PLASMA_SCROLL_MIN,
+            PLASMA_SCROLL_MAX,
+            PLASMA_SCROLL_DEFAULT,
+            step=PLASMA_SCROLL_STEP,
+            suffix="×",
+            display_scale=100.0,
+            display_decimals=2,
+        )
+        self.slider_plasma_scroll.setToolTip(
+            "Plasma ScrollFactor в ~/.config/kcminputrc (как "
+            "Параметры системы → Мышь → Скорость прокрутки). "
+            "Живая запись с --notify. Без divert — страница всегда скроллится. "
+            "Меньше = меньше строк на щелчок трещотки."
+        )
+        self.lbl_plasma_scroll = QLabel("устройство: —")
+        self.lbl_plasma_scroll.setStyleSheet("color: #555;")
+        self.lbl_plasma_scroll.setWordWrap(True)
+        self.lbl_plasma_hint = QLabel(
+            "Основной безопасный путь на Kubuntu/Wayland. HID++ не умеет "
+            "«строк на щелчок» — этот слайдер пишет ScrollFactor для "
+            "Logitech-указателей (Bolt: USB Receiver Mouse)."
+        )
+        self.lbl_plasma_hint.setWordWrap(True)
+        scroll_form.addRow("Скорость:", self.slider_plasma_scroll)
+        scroll_form.addRow(self.lbl_plasma_scroll)
+        scroll_form.addRow(self.lbl_plasma_hint)
+        layout.addWidget(scroll_box)
+
         # --- SmartShift ---
         ss_box = QGroupBox("SmartShift / MagSpeed")
         ss_form = QFormLayout(ss_box)
-        self.chk_ss_on = QCheckBox("Включён (SmartShift on)")
+        self.chk_ss_on = QCheckBox("Включён (SmartShift / ratchet on)")
         self.chk_ss_on.setChecked(True)
         self.chk_ss_on.setToolTip(
             "logiops GetConfig: mode 2=on, 1=off, 0=unset. "
-            "Снятие галочки пишет on:false (не clear). Live D-Bus + cfg."
+            "Снятие галочки пишет on:false (не clear). Live D-Bus + cfg. "
+            "При включении hi-res сбрасывается — иначе микроскролл между "
+            "щелчками трещотки."
         )
         self.lbl_ss_state = QLabel("состояние: —")
         self.lbl_ss_state.setStyleSheet("color: #555;")
@@ -472,37 +522,42 @@ class MainWindow(QMainWindow):
         ss_form.addRow(self.lbl_ss_torque_hint)
         layout.addWidget(ss_box)
 
-        # --- HiRes Wheel (feature 0x2121) + divert scroll speed ---
-        hr_box = QGroupBox("Hi-res scroll / скорость (HiresScroll / 0x2121)")
+        # --- HiRes Wheel (feature 0x2121) + optional divert Axis ---
+        hr_box = QGroupBox("Колесо: hi-res / divert (HiresScroll / 0x2121)")
         hr_form = QFormLayout(hr_box)
-        self.chk_hr_hires = QCheckBox("Hi-res (высокое разрешение колеса)")
-        self.chk_hr_hires.setChecked(True)
+        self.chk_hr_hires = QCheckBox(
+            "Hi-res (плавный микроскролл между щелчками)"
+        )
+        # Default OFF: SmartShift/ratchet → one notch = one scroll step.
+        self.chk_hr_hires.setChecked(False)
         self.chk_hr_hires.setToolTip(
-            "logiops hiresscroll.hires → HID++ HiRes mode. "
-            "GetConfig: первый bool из bbb."
+            "logiops hiresscroll.hires → HID++ HiRes. "
+            "ВКЛ: скролл от малейшего движения даже в режиме трещотки. "
+            "ВЫКЛ (рекомендуется с SmartShift): скролл только на щелчок "
+            "notch. GetConfig: первый bool из bbb."
         )
         self.chk_hr_invert = QCheckBox("Invert (инверсия направления)")
         self.chk_hr_invert.setChecked(False)
         self.chk_hr_invert.setToolTip("logiops hiresscroll.invert")
         self.chk_hr_target = QCheckBox(
-            "Target / divert (только вместе со скоростью)"
+            "Target / divert (только вместе с Axis-скоростью)"
         )
         self.chk_hr_target.setChecked(False)
         self.chk_hr_target.setEnabled(False)
         self.chk_hr_target.setToolTip(
             "HID++ Mode::Target. Один target:true БЕЗ up/down Axis "
             "глотает колесо (нет скролла страниц). Включается только "
-            "чекбоксом скорости ниже; Apply без скорости пишет target:false."
+            "чекбоксом ниже; Apply без скорости пишет target:false."
         )
         self.chk_hr_speed = QCheckBox(
             "Экспериментально: скорость через divert (Axis)"
         )
         self.chk_hr_speed.setChecked(False)
         self.chk_hr_speed.setToolTip(
-            "ОПАСНО на части стендов (Bolt): divert перехватывает колесо. "
-            "По умолчанию ВЫКЛ — обычный скролл через ОС (KDE Scroll speed). "
-            "Если включить: target + up/down Axis обязательны вместе "
-            "(logiops #116). «Применить в cfg»."
+            "Обходной путь logiops #116. По умолчанию ВЫКЛ — используйте "
+            "слайдер Plasma выше. Если включить: всегда target + up/down "
+            "Axis вместе; hi-res гасится (REL_WHEEL, не HI_RES), чтобы "
+            "не вернуть микроскролл. «Применить в cfg»."
         )
         self.slider_hr_mult = _ValueSlider(
             SCROLL_MULT_MIN,
@@ -515,23 +570,23 @@ class MainWindow(QMainWindow):
         )
         self.slider_hr_mult.setEnabled(False)
         self.slider_hr_mult.setToolTip(
-            "axis_multiplier для REL_WHEEL(_HI_RES), только если divert "
-            "скорость включена. Без Apply / без Axis скролл не меняется."
+            "axis_multiplier для REL_WHEEL при divert-скорости. "
+            "Без Apply / без обеих осей скролл не меняется."
         )
         self.lbl_hr_state = QLabel("D-Bus: —")
         self.lbl_hr_state.setStyleSheet("color: #555;")
         self.lbl_hr_hint = QLabel(
-            "Безопасный путь (по умолчанию): hires/invert, target=false — "
-            "скролл страниц как у ОС. Скорость: KDE → Mouse → Scroll speed. "
-            "Divert+Axis — экспериментально; target без Axis ломает колесо "
-            "(см. docs/scroll-speed.md)."
+            "Ratchet (SmartShift on): держите hi-res ВЫКЛ — скролл по "
+            "щелчку, не от микродвижений. Divert без обеих осей ломает "
+            "колесо; CfgWriter принудительно target:false. См. "
+            "docs/scroll-speed.md."
         )
         self.lbl_hr_hint.setWordWrap(True)
         hr_form.addRow(self.chk_hr_hires)
         hr_form.addRow(self.chk_hr_invert)
         hr_form.addRow(self.chk_hr_target)
         hr_form.addRow(self.chk_hr_speed)
-        hr_form.addRow("Множитель:", self.slider_hr_mult)
+        hr_form.addRow("Множитель Axis:", self.slider_hr_mult)
         hr_form.addRow(self.lbl_hr_state)
         hr_form.addRow(self.lbl_hr_hint)
         layout.addWidget(hr_box)
@@ -669,11 +724,10 @@ class MainWindow(QMainWindow):
         layout.addLayout(buttons)
 
         hint = QLabel(
-            "Слайдеры DPI / SmartShift — live D-Bus. Скорость скролла "
-            "(divert + Axis) и жесты/remap/hi-res/thumb — через "
-            "«Применить в cfg» (restart logid). Без divert скорость — в "
-            "KDE System Settings. Статус ~15 с. Профили на диске "
-            "(не app-specific)."
+            "DPI / SmartShift — live D-Bus. Скорость скролла — live "
+            "Plasma ScrollFactor (без divert). Hi-res / divert Axis / "
+            "жесты / remap / thumb — «Применить в cfg» (restart logid). "
+            "Статус ~15 с. Профили на диске (не app-specific)."
         )
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -702,6 +756,11 @@ class MainWindow(QMainWindow):
         self._live_timer.setInterval(LIVE_DEBOUNCE_MS)
         self._live_timer.timeout.connect(self._on_live_apply)
 
+        self._plasma_timer = QTimer(self)
+        self._plasma_timer.setSingleShot(True)
+        self._plasma_timer.setInterval(PLASMA_SCROLL_DEBOUNCE_MS)
+        self._plasma_timer.timeout.connect(self._on_plasma_scroll_apply)
+
         self.slider_dpi.slider.sliderReleased.connect(self._schedule_live_apply)
         self.slider_dpi.slider.valueChanged.connect(
             lambda _v: self._schedule_live_apply()
@@ -718,8 +777,14 @@ class MainWindow(QMainWindow):
         self.slider_ss_torque.slider.valueChanged.connect(
             lambda _v: self._schedule_live_apply()
         )
-        self.chk_ss_on.toggled.connect(lambda _v: self._schedule_live_apply())
+        self.chk_ss_on.toggled.connect(self._on_smartshift_toggled)
         self.chk_hr_speed.toggled.connect(self._on_hr_speed_toggled)
+        self.slider_plasma_scroll.slider.sliderReleased.connect(
+            self._schedule_plasma_scroll
+        )
+        self.slider_plasma_scroll.slider.valueChanged.connect(
+            lambda _v: self._schedule_plasma_scroll()
+        )
 
         # Initial load after the window is shown (sync sliders from device once).
         QTimer.singleShot(0, lambda: self._on_refresh(sync_controls=True))
@@ -770,6 +835,7 @@ class MainWindow(QMainWindow):
             },
             "device": {"name": "MX Master 3S", "family": "mx-master-3s"},
             "dpi": dpi,
+            "plasma_scroll_factor": round(self._plasma_scroll_factor(), 3),
             "smartshift": smartshift,
             "hiresscroll": hiresscroll,
             "thumbwheel": thumbwheel,
@@ -793,15 +859,28 @@ class MainWindow(QMainWindow):
     def _scroll_multiplier(self) -> float:
         return max(0.05, float(self.slider_hr_mult.value()) / 100.0)
 
+    def _plasma_scroll_factor(self) -> float:
+        return max(
+            SCROLL_FACTOR_MIN,
+            min(
+                SCROLL_FACTOR_MAX,
+                float(self.slider_plasma_scroll.value()) / 100.0,
+            ),
+        )
+
     def _build_hiresscroll(self) -> dict[str, Any]:
         """Build hiresscroll; divert only when experimental speed is opted in.
 
         ``target:true`` without up/down Axis eats the wheel — never emit that.
-        Default / safe path: hires+invert only, target false (OS scroll).
+        Default / safe path: hires false (discrete ratchet), target false
+        (OS + Plasma ScrollFactor).
         """
         speed_on = self.chk_hr_speed.isChecked()
+        # Divert Axis path forces hires off so we inject REL_WHEEL (not
+        # HI_RES) and keep notch-sized steps.
+        hires = False if speed_on else self.chk_hr_hires.isChecked()
         hr: dict[str, Any] = {
-            "hires": self.chk_hr_hires.isChecked(),
+            "hires": bool(hires),
             "invert": self.chk_hr_invert.isChecked(),
             # Standalone target checkbox is display-only; Apply never diverts
             # unless the experimental speed opt-in is on (with multiplier).
@@ -811,6 +890,17 @@ class MainWindow(QMainWindow):
             hr["scroll_multiplier"] = round(self._scroll_multiplier(), 3)
         return hr
 
+    def _on_smartshift_toggled(self, checked: bool) -> None:
+        """Ratchet on → kill hi-res micro-scroll between notches."""
+        if checked and self.chk_hr_hires.isChecked():
+            blocked = self.chk_hr_hires.blockSignals(True)
+            self.chk_hr_hires.setChecked(False)
+            self.chk_hr_hires.blockSignals(blocked)
+            self.statusBar().showMessage(
+                "SmartShift on → hi-res выкл (скролл по щелчку трещотки)"
+            )
+        self._schedule_live_apply()
+
     def _on_hr_speed_toggled(self, checked: bool) -> None:
         self.slider_hr_mult.setEnabled(bool(checked))
         # Target indicator follows speed; checkbox stays disabled (not a
@@ -819,6 +909,14 @@ class MainWindow(QMainWindow):
         self.chk_hr_target.setChecked(bool(checked))
         self.chk_hr_target.blockSignals(blocked)
         self.chk_hr_target.setEnabled(False)
+        if checked:
+            # Discrete Axis (REL_WHEEL): turn off hi-res micro-scroll.
+            blocked_h = self.chk_hr_hires.blockSignals(True)
+            self.chk_hr_hires.setChecked(False)
+            self.chk_hr_hires.blockSignals(blocked_h)
+            self.chk_hr_hires.setEnabled(False)
+        else:
+            self.chk_hr_hires.setEnabled(True)
 
     def _apply_hiresscroll_controls(self, hr: dict[str, Any]) -> None:
         """Sync GUI hi-res / speed widgets from a profile dict."""
@@ -849,6 +947,62 @@ class MainWindow(QMainWindow):
             # so next Apply clears divert.
             self.chk_hr_speed.setChecked(False)
             self._on_hr_speed_toggled(False)
+
+    def _sync_plasma_scroll_controls(self) -> None:
+        """Refresh Plasma ScrollFactor slider / device label from kcminputrc."""
+        targets = list_logitech_scroll_targets()
+        target, factor = primary_scroll_factor(targets)
+        if target is None:
+            self.lbl_plasma_scroll.setText(
+                "устройство: Logitech-мышь не найдена в /sys "
+                "(ScrollFactor не записан)"
+            )
+            return
+        if factor is not None and not self.slider_plasma_scroll.slider.isSliderDown():
+            cents = int(round(float(factor) * 100))
+            cents = max(PLASMA_SCROLL_MIN, min(PLASMA_SCROLL_MAX, cents))
+            blocked = self.slider_plasma_scroll.slider.blockSignals(True)
+            self.slider_plasma_scroll.setValue(cents)
+            self.slider_plasma_scroll.slider.blockSignals(blocked)
+        extra = ""
+        if len(targets) > 1:
+            extra = f" · ещё {len(targets) - 1}"
+        self.lbl_plasma_scroll.setText(
+            f"устройство: {target.label()}{extra}"
+        )
+
+    def _schedule_plasma_scroll(self) -> None:
+        if self._suppress_live or not self._initial_sync_done:
+            return
+        self._plasma_timer.start()
+
+    def _on_plasma_scroll_apply(self) -> None:
+        """Debounced user-level ScrollFactor write (no pkexec / divert)."""
+        if self._suppress_live:
+            return
+        factor = self._plasma_scroll_factor()
+        try:
+            written = apply_scroll_factor(factor)
+        except (OSError, subprocess.SubprocessError, ValueError) as exc:
+            self.lbl_plasma_scroll.setText(f"ошибка ScrollFactor: {exc}")
+            self.statusBar().showMessage(f"Plasma scroll: {exc}")
+            return
+        if not written:
+            self.lbl_plasma_scroll.setText(
+                "устройство: нет Logitech-мыши — ScrollFactor не записан"
+            )
+            self.statusBar().showMessage(
+                "Plasma scroll: указатель Logitech не найден"
+            )
+            return
+        names = ", ".join(t.name for t in written)
+        self.lbl_plasma_scroll.setText(
+            f"устройство: {written[0].label()}"
+            + (f" · записано {len(written)}" if len(written) > 1 else "")
+        )
+        self.statusBar().showMessage(
+            f"Plasma ScrollFactor {factor:.2f}× → {names}"
+        )
 
     def _build_thumbwheel(self) -> dict[str, Any]:
         divert = self.chk_tw_divert.isChecked()
@@ -957,6 +1111,8 @@ class MainWindow(QMainWindow):
         if self.slider_ss_torque.slider.isSliderDown():
             return
         if self.slider_hr_mult.slider.isSliderDown():
+            return
+        if self.slider_plasma_scroll.slider.isSliderDown():
             return
 
         def _ok(data: dict[str, Any]) -> None:
@@ -1092,7 +1248,7 @@ class MainWindow(QMainWindow):
                     # D-Bus only returns bbb — no axis_multiplier. Sync
                     # hires/invert only. Never mirror orphan target:true into
                     # a control that could re-Apply divert without Axis.
-                    self.chk_hr_hires.setChecked(bool(hs.get("hires", True)))
+                    self.chk_hr_hires.setChecked(bool(hs.get("hires", False)))
                     self.chk_hr_invert.setChecked(bool(hs.get("invert", False)))
                     if hs.get("target") and not self.chk_hr_speed.isChecked():
                         self.lbl_hr_hint.setText(
@@ -1100,7 +1256,7 @@ class MainWindow(QMainWindow):
                             "Axis колесо не скроллит страницы. Нажмите "
                             "«Применить в cfg» (скорость divert выкл.) — "
                             "запишется безопасный target:false. "
-                            "Скорость ОС: KDE → Mouse → Scroll speed."
+                            "Скорость: слайдер Plasma выше."
                         )
 
                 tw = dev.get("thumbwheel")
@@ -1112,6 +1268,8 @@ class MainWindow(QMainWindow):
             if sync_controls:
                 self._initial_sync_done = True
                 self._live_timer.stop()
+                self._plasma_timer.stop()
+                self._sync_plasma_scroll_controls()
 
         if isinstance(ss, dict):
             mode = int(ss.get("mode", 0) or 0)
@@ -1127,7 +1285,7 @@ class MainWindow(QMainWindow):
             self.lbl_hr_state.setText(
                 "bbb hires=%s invert=%s target=%s"
                 % (
-                    bool(hs.get("hires", True)),
+                    bool(hs.get("hires", False)),
                     bool(hs.get("invert", False)),
                     bool(hs.get("target", False)),
                 )
@@ -1214,9 +1372,23 @@ class MainWindow(QMainWindow):
     def _on_apply(self) -> None:
         profile = self._build_profile()
         cfg_text = CfgWriter(profile).render()
+        plasma_factor = float(profile.get("plasma_scroll_factor") or 0)
 
         def _do_apply() -> dict[str, Any]:
-            return apply_cfg_text(cfg_text)
+            result = apply_cfg_text(cfg_text)
+            # User-level; keep beside cfg apply so profiles restore speed too.
+            if plasma_factor > 0:
+                try:
+                    written = apply_scroll_factor(plasma_factor)
+                    result = dict(result)
+                    result["plasma_scroll_factor"] = plasma_factor
+                    result["plasma_scroll_devices"] = [
+                        t.label() for t in written
+                    ]
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                    result = dict(result)
+                    result["plasma_scroll_error"] = str(exc)
+            return result
 
         def _ok(result: dict[str, Any]) -> None:
             self._handle_apply_result(profile, result, title="Применить")
@@ -1262,6 +1434,8 @@ class MainWindow(QMainWindow):
             msg = (
                 f"Записано {result.get('wrote')}\n"
                 f"DPI: {profile.get('dpi')}\n"
+                f"Plasma ScrollFactor: "
+                f"{profile.get('plasma_scroll_factor', '—')}\n"
                 f"SmartShift: on={ss.get('on')} threshold={ss.get('threshold')}\n"
                 f"HiRes: hires={hr.get('hires')} invert={hr.get('invert')} "
                 f"target={hr.get('target')} "
@@ -1270,6 +1444,13 @@ class MainWindow(QMainWindow):
                 f"Жесты: CID 0xc3 ({len(gestures)} направлений)\n"
                 f"devices: {devices}\n"
                 f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
+            )
+        if result.get("plasma_scroll_error"):
+            msg += f"\n\n⚠ Plasma ScrollFactor: {result['plasma_scroll_error']}"
+        elif result.get("plasma_scroll_devices"):
+            msg += (
+                "\nPlasma devices: "
+                + ", ".join(result["plasma_scroll_devices"])
             )
         if quirk:
             msg += f"\n\n⚠ {quirk}"
@@ -1446,9 +1627,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Профиль", str(exc))
             return
         cfg_text = CfgWriter(profile).render()
+        plasma_factor = float(profile.get("plasma_scroll_factor") or 0)
 
         def _do_apply() -> dict[str, Any]:
-            return apply_cfg_text(cfg_text)
+            result = apply_cfg_text(cfg_text)
+            if plasma_factor > 0:
+                try:
+                    written = apply_scroll_factor(plasma_factor)
+                    result = dict(result)
+                    result["plasma_scroll_factor"] = plasma_factor
+                    result["plasma_scroll_devices"] = [
+                        t.label() for t in written
+                    ]
+                except (OSError, subprocess.SubprocessError, ValueError) as exc:
+                    result = dict(result)
+                    result["plasma_scroll_error"] = str(exc)
+            return result
 
         def _ok(result: dict[str, Any]) -> None:
             self._handle_apply_result(
@@ -1498,6 +1692,13 @@ class MainWindow(QMainWindow):
         try:
             if profile.get("dpi") is not None:
                 self.slider_dpi.setValue(int(profile["dpi"]))
+
+            if profile.get("plasma_scroll_factor") is not None:
+                cents = int(
+                    round(float(profile["plasma_scroll_factor"]) * 100)
+                )
+                cents = max(PLASMA_SCROLL_MIN, min(PLASMA_SCROLL_MAX, cents))
+                self.slider_plasma_scroll.setValue(cents)
 
             ss = profile.get("smartshift") or {}
             if isinstance(ss, dict):

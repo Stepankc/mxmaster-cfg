@@ -11,12 +11,13 @@
     "pid_hint": "046d:b034"
   },
   "dpi": 1000,
+  "plasma_scroll_factor": 0.3,
   "smartshift": {
     "on": true,
     "threshold": 30
   },
   "hiresscroll": {
-    "hires": true,
+    "hires": false,
     "invert": false,
     "target": false
   },

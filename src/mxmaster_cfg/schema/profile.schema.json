@@ -48,6 +48,12 @@
       "minimum": 200,
       "maximum": 8000
     },
+    "plasma_scroll_factor": {
+      "type": "number",
+      "minimum": 0.05,
+      "maximum": 5,
+      "description": "KDE Plasma libinput ScrollFactor (kcminputrc). Safe scroll speed without hiresscroll divert."
+    },
     "smartshift": {
       "type": "object",
       "additionalProperties": false,

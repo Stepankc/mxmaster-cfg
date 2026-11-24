@@ -44,8 +44,8 @@ members noted where they differ.
 | Hi-res mode (`0x2121` hires) | **done** | Checkbox → cfg / SetHires |
 | Invert vertical scroll | **done** | `invert` |
 | Divert wheel to daemon | **done** | `target` (= HID++ Target) |
-| Options+-like **scroll speed** | **partial** | **No** HID++ line-speed. Experimental divert + `axis_multiplier` (default **OFF** — orphan `target:true` eats wheel). Safe path: KDE/libinput ([scroll-speed.md](scroll-speed.md)) |
-| Smooth / ratchet feel | **partial** | SmartShift + hires + OS quirks; Bolt often low-res only |
+| Options+-like **scroll speed** | **partial** | **No** HID++ line-speed. GUI writes Plasma `ScrollFactor` (primary). Divert + `axis_multiplier` remains optional/OFF ([scroll-speed.md](scroll-speed.md)) |
+| Smooth / ratchet feel | **partial** | SmartShift on + **`hires:false`** = scroll per notch; `hires:true` = micro-scroll between clicks |
 | Wheel mode LED / ratchet state UI | **missing** | `GetRatchetState` exists in HID++ backend; not in GUI |
 | Divert up/down custom actions | **partial** | Speed path uses Axis; arbitrary Keypress up/down not in GUI |
 
@@ -134,5 +134,5 @@ Device name in cfg must match logiops discovery string.
 
 ## Implemented closest to Options+ scroll speed
 
-Divert + Axis `scroll_multiplier` slider — see [scroll-speed.md](scroll-speed.md).
-Without divert: KDE **Scroll speed** / libinput.
+Plasma **ScrollFactor** slider (live `kcminputrc`) + ratchet-safe **`hires:false`**.
+Optional divert Axis — see [scroll-speed.md](scroll-speed.md).

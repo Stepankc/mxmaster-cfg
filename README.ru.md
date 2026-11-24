@@ -25,9 +25,9 @@ remap кнопок и жесты (CID `0xc3`).
 - **DPI** чтение/запись (live D-Bus + persist через cfg)
 - **SmartShift** on/off + threshold (корректный **tri-state** `GetConfig` в logiops)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
-- **Скорость скролла (ближайший реальный контроль)**: divert + слайдер
-  Axis `axis_multiplier` (в HID++ нет «скорости строк» Options+ —
-  см. [docs/scroll-speed.ru.md](docs/scroll-speed.ru.md))
+  (по умолчанию **hires выкл** с SmartShift → скролл по щелчку трещотки)
+- **Скорость скролла**: слайдер Plasma `ScrollFactor` (безопасно, без divert);
+  опционально divert Axis — [docs/scroll-speed.ru.md](docs/scroll-speed.ru.md)
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, пресеты left/right/tap
 - **Батарея** % + зарядка (Unified Battery `0x1004` коротким hidraw-probe;
   UPower/sysfs, если ядро отдаёт; в D-Bus logiops 0.3.5 Battery нет)

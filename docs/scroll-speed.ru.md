@@ -2,80 +2,73 @@
 
 [English](scroll-speed.md) · [Русский](scroll-speed.ru.md)
 
-Как устроена «скорость скролла» у MX Master 3S при **logiops 0.3.5** и Linux.
+Как устроены «скорость скролла» и ощущение трещотки у MX Master 3S при
+**logiops 0.3.5** и **Kubuntu / Plasma 6 (Wayland)**.
 
 ## Кратко
 
 | Слой | Что даёт | В mxmaster-cfg? |
 |------|----------|-----------------|
-| HID++ `0x2121` HiRes Wheel | Только биты режима: **hires**, **invert**, **target** (divert). В capabilities есть **multiplier** прошивки (его использует logiops для Axis). Поля «строк на щелчок» / Options+ scroll speed **нет**. | Чекбоксы hires / invert / target |
-| logiops divert + Axis | При `target: true` жесты `up`/`down` с `axis_multiplier` снова шлют `REL_WHEEL` или `REL_WHEEL_HI_RES` (PixlOne/logiops [#116](https://github.com/PixlOne/logiops/issues/116)). | Чекбокс **скорости** + слайдер множителя → cfg |
-| Ядро / libinput / DE | Как события колеса становятся пикселями/строками (hwdb, quirks, Scroll speed в KDE). | Только документация — приложение это не пишет |
+| HID++ `0x2121` HiRes Wheel | Биты: **hires**, **invert**, **target**. **`hires:true` = микроскролл между щелчками трещотки**; `hires:false` = скролл на дискретный щелчок. Поля Options+ «строк на щелчок» нет. | Чекбокс hi-res (по умолчанию **ВЫКЛ** с SmartShift) |
+| Plasma `ScrollFactor` | Масштаб прокрутки для указателя libinput (`kcminputrc`). | **Основной** слайдер как DPI — live, без divert |
+| logiops divert + Axis | `target:true` + `up`/`down` `axis_multiplier` снова шлёт `REL_WHEEL` / `REL_WHEEL_HI_RES`. | Опциональный экспериментальный чекбокс (обе оси или `target:false`) |
+| SmartShift threshold | Когда включается free-spin — **не** строки на щелчок. | Слайдер threshold |
 
-**Не** делаем «пустой» слайдер, который ничего не меняет в прошивке. Без divert — путь ОС ниже.
+## Трещотка = скролл по щелчку (не микроскролл)
 
-## Безопасность (Bolt / MX Master 3S)
+При **включённом SmartShift** держите **hi-res ВЫКЛ**.
 
-**`target: true` без жестов `up`/`down` Axis глотает колесо** — страницы не
-скроллятся. По умолчанию divert **ВЫКЛ** (`target: false`, только hi-res).
-CfgWriter **не пишет** orphan divert: при `target` без обеих осей (или
-`scroll_multiplier`) принудительно `target: false`.
+- `hires: true` отдаёт hi-res движение → страница едет от малейшего движения
+  пальца, даже когда трещотка включена.
+- `hires: false` → один щелчок MagSpeed ≈ один шаг `REL_WHEEL`.
 
-Если скролл пропал после Apply: в `/etc/logid.cfg` уберите `target: true` без
-`up`/`down`, `systemctl restart logid`, пошевелите мышь (Bolt).
+GUI сбрасывает hi-res при включении SmartShift и по умолчанию держит его
+выключенным. Apply пишет `hires: false; target: false;`, пока не включён
+экспериментальный divert.
 
-## GUI (экспериментальный divert)
+## Основной GUI: Plasma ScrollFactor
 
-По умолчанию **Экспериментально: скорость через divert** — **снят**.
+Безопасный путь (по умолчанию): **без divert**, страница всегда скроллится.
 
-1. Включайте только осознанно — сразу `target: true` **и** оси.
-2. **Множитель** (0.25× … 4.00×). `1.00×` — базовая шкала divert.
-3. **Применить в cfg** (restart `logid`). D-Bus не задаёт `axis_multiplier`.
+1. **Экспериментально: скорость через divert** — снят.
+2. **Hi-res** — снят, пока включён SmartShift/ratchet.
+3. Слайдер **Скорость скролла (Plasma)** (0.10× … 2.00×) — как DPI. Пишет
+   `ScrollFactor` в `~/.config/kcminputrc` через `kwriteconfig6 --notify`.
+4. На стенде Bolt указатель обычно
+   `Logitech USB Receiver Mouse` (`1133` / `50504` = `046d:c548`).
 
-Пример cfg (hires вкл.):
+Поле профиля: `plasma_scroll_factor` (также при **Применить в cfg**).
+
+Тот же параметр: Параметры системы → **Мышь и тачпад** → **Мышь** →
+**Скорость прокрутки**.
+
+## Безопасность (divert)
+
+**`target: true` без `up`/`down` Axis глотает колесо.** Divert по умолчанию
+**ВЫКЛ**. CfgWriter не пишет orphan divert. Экспериментальный divert всегда
+ставит **обе** оси и **гасит hi-res** (`REL_WHEEL`, не `HI_RES`).
+
+Если скролл пропал: `target: false`, restart `logid`, пошевелите мышь (Bolt).
+
+## Экспериментальный divert
+
+Только если Plasma-фактора мало:
 
 ```
 hiresscroll:
 {
-  hires: true;
+  hires: false;
   invert: false;
   target: true;
-  up = { mode: "Axis"; axis: "REL_WHEEL_HI_RES"; axis_multiplier: 1.5; };
-  down = { mode: "Axis"; axis: "REL_WHEEL_HI_RES"; axis_multiplier: -1.5; };
+  up = { mode: "Axis"; axis: "REL_WHEEL"; axis_multiplier: 0.5; };
+  down = { mode: "Axis"; axis: "REL_WHEEL"; axis_multiplier: -0.5; };
 };
 ```
 
-При `hires: false` ось — `REL_WHEEL`.
-
-Поле профиля: `hiresscroll.scroll_multiplier` (или явные `up`/`down`).
-
-## Путь ОС (без divert)
-
-При `target: false` logiops не масштабирует величину скролла.
-
-**Kubuntu / KDE Plasma 6:**
-
-1. Параметры системы → **Мышь и тачпад** → **Мышь**
-2. Ползунок **Скорость прокрутки** (формулировка может чуть отличаться)
-
-Это зона композитора/libinput, не HID++.
-
-**libinput / udev (для продвинутых):**
-
-- Через Bolt часто только low-res шаги; Bluetooth чаще отдаёт hi-res (ArchWiki *Logitech MX Master*).
-- Опционально hwdb (`MOUSE_WHEEL_CLICK_*`) или `local-overrides.quirks` — см. [hires-scroll.ru.md](hires-scroll.ru.md).
-
-## Аналоги Solaar / ratbag
-
-| Инструмент | Примерно |
-|------------|----------|
-| Solaar «Scroll Wheel Resolution» | ≈ `hires` (драйвер ядра может конфликтовать — часто лучше Ignore) |
-| Solaar invert / divert | ≈ `invert` / `target` |
-| Options+ «Scroll speed» | **ОС + софт** на Windows/macOS; на Linux **нет** переносимого HID++ setpoint |
-| piper / libratbag | DPI/кнопки; не UX скорости MagSpeed |
+Нужен **Применить в cfg**. D-Bus не задаёт `axis_multiplier`.
 
 ## Связанное
 
 - [hires-scroll.ru.md](hires-scroll.ru.md) — биты режима
-- [feature-gap.ru.md](feature-gap.ru.md) — полный чеклист Options+
-- [smartshift.ru.md](smartshift.ru.md) — порог ratchet / free-spin (не скорость строк)
+- [feature-gap.ru.md](feature-gap.ru.md) — чеклист Options+
+- [smartshift.ru.md](smartshift.ru.md) — порог ratchet / free-spin

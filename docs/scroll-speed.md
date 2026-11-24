@@ -2,82 +2,77 @@
 
 [English](scroll-speed.md) · [Русский](scroll-speed.ru.md)
 
-How “scroll speed” maps on MX Master 3S under **logiops 0.3.5** and Linux.
+How “scroll speed” and ratchet feel map on MX Master 3S under **logiops 0.3.5**
+and **Kubuntu / Plasma 6 (Wayland)**.
 
 ## Short answer
 
 | Layer | What it controls | In mxmaster-cfg? |
 |-------|------------------|------------------|
-| HID++ `0x2121` HiRes Wheel | Mode bits only: **hires**, **invert**, **target** (divert). Firmware also reports a **capability multiplier** (used internally by logiops Axis gestures). **No** “lines per notch” / Options+ scroll-speed field. | hires / invert / target checkboxes |
-| logiops divert + Axis | When `target: true`, `up`/`down` gestures with `axis_multiplier` re-inject `REL_WHEEL` or `REL_WHEEL_HI_RES` (PixlOne/logiops [#116](https://github.com/PixlOne/logiops/issues/116)). | **Scroll speed** checkbox + multiplier slider → cfg |
-| Kernel / libinput / DE | How wheel events become pixel/line scroll (hwdb click angle, quirks, KDE scroll speed). | Documented only — not written by this app |
+| HID++ `0x2121` HiRes Wheel | Mode bits: **hires**, **invert**, **target**. **`hires:true` = micro-scroll between ratchet notches**; `hires:false` = scroll on discrete clicks. No Options+ “lines per notch”. | Hi-res checkbox (default **OFF** with SmartShift) |
+| Plasma `ScrollFactor` | Lines/distance per wheel step for the libinput pointer (`kcminputrc`). | **Primary** DPI-like slider — live write, no divert |
+| logiops divert + Axis | `target:true` + `up`/`down` `axis_multiplier` re-inject `REL_WHEEL` / `REL_WHEEL_HI_RES`. | Optional experimental checkbox (both axes or `target:false`) |
+| SmartShift threshold | When free-spin engages — **not** lines per notch. | Threshold slider |
 
-**Do not** expect a no-op slider that pretends to change firmware line speed. Without divert, use the OS path below.
+## Ratchet = scroll per notch (not micro-scroll)
 
-## Safety (Bolt / MX Master 3S)
+With **SmartShift on**, keep **hi-res OFF**.
 
-**`target: true` without `up`/`down` Axis gestures swallows the wheel** — pages
-do not scroll. mxmaster-cfg defaults to **divert OFF** (`target: false`,
-hi-res-only). CfgWriter **refuses** to emit orphan divert: if `target` is set
-without both axes (or `scroll_multiplier`), it writes `target: false`.
+- `hires: true` reports high-resolution wheel motion → pages move on the
+  slightest finger movement even while the ratchet is engaged.
+- `hires: false` → one MagSpeed notch ≈ one `REL_WHEEL` step (discrete).
 
-If scroll suddenly dies after an Apply, check `/etc/logid.cfg` for
-`target: true` with no `up`/`down`, set `target: false`, restart `logid`, and
-move the mouse (Bolt).
+The GUI turns hi-res **off** when you enable SmartShift, and defaults hi-res
+unchecked. Apply writes `hires: false; target: false;` unless you opt into
+experimental divert.
 
-## GUI (experimental divert path)
+## Primary GUI: Plasma ScrollFactor
 
-Default: leave **Экспериментально: скорость через divert** **unchecked**.
+Safe path (default): **no divert**, page scroll always works.
 
-1. Opt in only if you accept divert risk — forces `target: true` **and** axes.
-2. Set **Множитель** (0.25× … 4.00×). `1.00×` is the baseline divert scale.
-3. Click **Применить в cfg** (restarts `logid`). D-Bus cannot set
-   `axis_multiplier`.
+1. Leave **Экспериментально: скорость через divert** unchecked.
+2. Keep **Hi-res** unchecked while SmartShift/ratchet is on.
+3. Move **Скорость скролла (Plasma)** (0.10× … 2.00×) — same idea as the DPI
+   slider. Writes `ScrollFactor` under
+   `[Libinput][<vendor>][<product>][<name>]` in `~/.config/kcminputrc` with
+   `kwriteconfig6 --notify`.
+4. On the Bolt stand the pointer is typically
+   `Logitech USB Receiver Mouse` (`1133` / `50504` = `046d:c548`).
 
-Rendered cfg shape (hires on):
+Profile field: `plasma_scroll_factor` (also applied on **Применить в cfg**).
+
+You can still tweak the same value in System Settings → **Mouse & Touchpad** →
+**Mouse** → **Scroll speed**.
+
+## Safety (divert)
+
+**`target: true` without `up`/`down` Axis swallows the wheel.** Defaults stay
+divert **OFF**. CfgWriter refuses orphan divert. Experimental divert forces
+**both** axes and turns **hi-res off** (`REL_WHEEL`, not `REL_WHEEL_HI_RES`) so
+micro-scroll does not come back through uinput.
+
+If scroll dies after an Apply: set `target: false`, restart `logid`, move the
+mouse (Bolt).
+
+## Experimental divert path
+
+Only if Plasma factor is not enough:
 
 ```
 hiresscroll:
 {
-  hires: true;
+  hires: false;
   invert: false;
   target: true;
-  up = { mode: "Axis"; axis: "REL_WHEEL_HI_RES"; axis_multiplier: 1.5; };
-  down = { mode: "Axis"; axis: "REL_WHEEL_HI_RES"; axis_multiplier: -1.5; };
+  up = { mode: "Axis"; axis: "REL_WHEEL"; axis_multiplier: 0.5; };
+  down = { mode: "Axis"; axis: "REL_WHEEL"; axis_multiplier: -0.5; };
 };
 ```
 
-With `hires: false`, axes use `REL_WHEEL` instead.
-
-Profile field: `hiresscroll.scroll_multiplier` (or explicit `up`/`down`).
-
-## OS path (no divert)
-
-When `target: false`, logiops does not scale scroll magnitude.
-
-**Kubuntu / KDE Plasma 6:**
-
-1. System Settings → **Mouse & Touchpad** → **Mouse**
-2. Adjust **Scroll speed** (wording may vary slightly by Plasma version)
-
-That setting is compositor/libinput territory, not HID++.
-
-**libinput / udev (advanced):**
-
-- Bolt often exposes only low-res wheel steps; Bluetooth is more likely to expose hi-res events (see ArchWiki *Logitech MX Master*).
-- Optional hwdb (`MOUSE_WHEEL_CLICK_ANGLE` / `MOUSE_WHEEL_CLICK_COUNT`) or `local-overrides.quirks` (`AttrEventCode=-REL_WHEEL_HI_RES;…`) change feel — see [hires-scroll.md](hires-scroll.md) and ArchWiki.
-
-## Solaar / ratbag equivalents
-
-| Tool | Rough equivalent |
-|------|------------------|
-| Solaar “Scroll Wheel Resolution” | ≈ logiops `hires` (kernel HID++ driver may fight this — “Ignore” is often safest) |
-| Solaar invert / divert | ≈ `invert` / `target` |
-| Options+ “Scroll speed” | **OS + software** on Windows/macOS; **not** a portable HID++ setpoint on Linux |
-| piper / libratbag | DPI/buttons; not MagSpeed scroll-speed UX |
+Needs **Применить в cfg**. D-Bus cannot set `axis_multiplier`.
 
 ## Related
 
 - [hires-scroll.md](hires-scroll.md) — mode bits
-- [feature-gap.md](feature-gap.md) — full Options+ checklist
-- [smartshift.md](smartshift.md) — ratchet / free-spin threshold (not line speed)
+- [feature-gap.md](feature-gap.md) — Options+ checklist
+- [smartshift.md](smartshift.md) — ratchet / free-spin threshold

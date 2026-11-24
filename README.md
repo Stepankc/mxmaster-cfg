@@ -25,8 +25,9 @@ button remap, and gesture button (CID `0xc3`).
 - **DPI** get/set (live D-Bus + persist through cfg)
 - **SmartShift** on/off + threshold (correct logiops **tri-state** `GetConfig`)
 - **Hi-res scroll** (`HiresScroll` / `0x2121`): hires, invert, target/divert
-- **Scroll speed (closest real control)**: divert + Axis `axis_multiplier`
-  slider (HID++ has no Options+-style line speed — see [docs/scroll-speed.md](docs/scroll-speed.md))
+  (default **hires off** with SmartShift → scroll per ratchet notch)
+- **Scroll speed**: Plasma `ScrollFactor` slider (safe, no divert); optional
+  divert Axis — see [docs/scroll-speed.md](docs/scroll-speed.md)
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, left/right/tap presets
 - **Battery** % + charging (Unified Battery `0x1004` via short hidraw probe;
   UPower/sysfs when the kernel exposes it; logiops 0.3.5 D-Bus has no Battery)
