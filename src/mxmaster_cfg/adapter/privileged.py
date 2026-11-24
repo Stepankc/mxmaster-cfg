@@ -4,6 +4,9 @@
 Stock ``pizza.pixl.LogiOps`` D-Bus policy allows only root. The GUI therefore
 never calls busctl itself for device ops; it goes through
 ``mxmaster-cfg-helper`` via ``pkexec`` (polkit action ``org.mxmaster.cfg.helper``).
+
+With ``10-mxmaster-cfg.rules`` installed, an active local sudo/admin session
+gets ``YES`` (no repeated password prompts for ~15s status polls).
 """
 
 from __future__ import annotations

@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Allow an active local admin session to run mxmaster-cfg-helper without
+// repeated password prompts. The GUI polls status ~every 15s via pkexec;
+// auth_admin_keep alone only lasts ~5 minutes and re-prompts mid-session.
+// Pattern matches Ubuntu bolt / similar desktop helpers: YES while the user
+// is at the console and in sudo/admin (login already authenticated them).
+polkit.addRule(function(action, subject) {
+    if (action.id !== "org.mxmaster.cfg.helper") {
+        return;
+    }
+    if (subject.active !== true || subject.local !== true) {
+        return;
+    }
+    if (subject.isInGroup("sudo") || subject.isInGroup("admin")) {
+        return polkit.Result.YES;
+    }
+});

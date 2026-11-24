@@ -53,7 +53,9 @@ sudo apt install -y \
   python3-pyside6.qtwidgets python3-pyside6.qtcore python3-pyside6.qtgui \
   logiops policykit-1
 
-# 2) Helper + polkit (один раз спросит пароль)
+# 2) Helper + polkit policy/rules
+#    (установка может спросить пароль один раз; дальше активная локальная
+#     сессия sudo/admin не переспрашивает на опрос статуса — docs/install.ru.md)
 cd /path/to/mxmaster-cfg
 bash scripts/install-helper.sh
 
@@ -131,6 +133,7 @@ pkexec /usr/libexec/mxmaster-cfg-helper wake-receiver
 .
 ├── helper/mxmaster-cfg-helper
 ├── polkit/org.mxmaster.cfg.policy
+├── polkit/10-mxmaster-cfg.rules # активная локальная sudo/admin → YES
 ├── src/mxmaster_cfg/
 ├── scripts/install-helper.sh
 ├── scripts/install-desktop.sh   # меню приложений → ./run.sh

@@ -20,6 +20,16 @@ PYTHONPATH=src python3 -m mxmaster_cfg
 Application Menu entry (local tree): see [desktop.md](desktop.md) —
 `scripts/install-desktop.sh` points at this `run.sh` with an absolute path.
 
+## Privileged helper / password prompts
+
+Status, live DPI/SmartShift, Apply, and wake all go through `pkexec` →
+`mxmaster-cfg-helper`. After `scripts/install-helper.sh` (or the `.deb`), an
+active local `sudo`/`admin` session does **not** get a password dialog on each
+15 s poll — see [install.md](install.md#how-authentication-works).
+
+If you still see prompts every few minutes, reinstall the helper so
+`10-mxmaster-cfg.rules` is present, then log out/in once.
+
 ## In the GUI
 
 1. On launch the GUI loads device status once (sliders sync from device).

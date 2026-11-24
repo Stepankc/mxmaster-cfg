@@ -18,7 +18,7 @@ sudo apt install -y \
 ## Install the privileged helper
 
 Stock logiops D-Bus is **root-only**. The GUI never talks to the system bus
-directly; it launches `helper/mxmaster-cfg-helper` through polkit.
+directly; it launches `helper/mxmaster-cfg-helper` through polkit (`pkexec`).
 
 ```bash
 cd /path/to/mxmaster-cfg
@@ -29,10 +29,22 @@ This installs:
 
 - `/usr/libexec/mxmaster-cfg-helper`
 - `/usr/share/polkit-1/actions/org.mxmaster.cfg.policy`
+- `/usr/share/polkit-1/rules.d/10-mxmaster-cfg.rules`
 
-Action: `org.mxmaster.cfg.helper` (`auth_admin_keep` for an active session).
+### How authentication works
 
-Re-run the script after pulling helper changes.
+- Action id: `org.mxmaster.cfg.helper`.
+- For an **active local** session user in group **`sudo`** or **`admin`**
+  (typical Kubuntu desktop login), the rules file returns **YES** — no password
+  dialog for status polls, Apply, or wake. Your graphical login already
+  authenticated the session.
+- Otherwise the policy falls back to `auth_admin` /
+  `auth_admin_keep` (~5 minutes keep). That short keep is why the GUI used to
+  re-ask every few minutes before the rules file existed.
+- Remote / inactive / non-admin subjects still need an admin password.
+
+Re-run the script after pulling helper or polkit changes. Polkit reloads rules
+automatically; if a prompt still appears, log out/in once or reboot.
 
 ## Optional: editable Python install
 

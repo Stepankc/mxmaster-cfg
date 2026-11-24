@@ -53,7 +53,9 @@ sudo apt install -y \
   python3-pyside6.qtwidgets python3-pyside6.qtcore python3-pyside6.qtgui \
   logiops policykit-1
 
-# 2) Install helper + polkit policy (asks for password once)
+# 2) Install helper + polkit policy/rules
+#    (install itself may ask once; afterwards active local sudo/admin
+#     sessions do not re-prompt on 15s status polls — see docs/install.md)
 cd /path/to/mxmaster-cfg
 bash scripts/install-helper.sh
 
@@ -130,6 +132,7 @@ Engineering notes (mostly Russian): `docs/*-notes.md`, plan, spike, runbook.
 .
 ├── helper/mxmaster-cfg-helper   # root CLI → busctl / cfg+restart
 ├── polkit/org.mxmaster.cfg.policy
+├── polkit/10-mxmaster-cfg.rules # active local sudo/admin → YES
 ├── src/mxmaster_cfg/            # PySide6 GUI + adapters
 ├── scripts/install-helper.sh
 ├── scripts/install-desktop.sh   # user Application Menu → ./run.sh
