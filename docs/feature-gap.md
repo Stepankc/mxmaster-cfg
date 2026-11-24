@@ -24,7 +24,7 @@ members noted where they differ.
 | DPI get/set | **done** | Live `SetDPI` + cfg `dpi:` |
 | DPI steps / range | **partial** | Slider 200–8000 / 50; device may clamp |
 | DPI Shift / dual DPI | **missing** | No dedicated “DPI shift while held” UI |
-| CycleDPI on button/gesture | **partial** | Preset on gesture Left / remap CycleDPI |
+| CycleDPI on button/gesture | **done** | Per-CID picker + gesture Left preset |
 | Sensor surface tuning | **impossible** | Not exposed usefully via logiops IPC |
 
 ## MagSpeed / SmartShift
@@ -64,15 +64,16 @@ members noted where they differ.
 
 | CID (3S spike) | Role | Status |
 |----------------|------|--------|
-| `0x50` / middle | Middle click | **missing** | Usually OS middle; rarely remapped in GUI |
-| `0x52` | ? / extra | **missing** | Listed remappable on spike; no dedicated control |
-| `0x53` | Back | **partial** | Remap Forward/Back combo only swaps F/B keys |
-| `0x56` | Forward | **partial** | Same |
-| `0xc3` | Gesture button | **partial** | Fixed preset grid (Up/Down/Left/Right/None) |
-| `0xc4` | Mode / SmartShift | **partial** | Default ToggleSmartShift in examples; not full action picker |
-| `0xd7` | Extra | **missing** | Remappable on device; no GUI row |
+| `0x50` | Left (primary) | **impossible** / N/A | Not in remappable spike list; OS left |
+| `0x52` | Middle | **done** | Per-CID action picker ([buttons.md](buttons.md)) |
+| `0x53` | Back | **done** | Same picker (default KEY_BACK) |
+| `0x56` | Forward | **done** | Same (default KEY_FORWARD) |
+| `0xc3` | Gesture button | **done** | Gestures mode + direction presets; or any BasicAction |
+| `0xc4` | Mode / SmartShift | **done** | Default ToggleSmartShift; full picker |
+| `0xd7` | Extra | **done** | Per-CID picker (default = omit / firmware) |
 | Gesture OnInterval / Axis / RawXY | **missing** | Only OnRelease Keypress/CycleDPI/ToggleSS presets |
 | Gesture sensitivity / pixels | **missing** | |
+| Free-form custom Keypress editor | **partial** | Common shortcuts + load unknown Keypress as custom |
 
 ## Battery / power
 
@@ -125,10 +126,10 @@ Device name in cfg must match logiops discovery string.
 
 ## Top missing gaps (priority for later)
 
-1. **Full per-CID action editor** (all remappable buttons, not only F/B + gesture presets)
-2. **App-aware profiles** (post-MVP by design)
-3. **Bluetooth first-class smoke + Easy-Switch/host UI**
-4. **Thumb touch/proxy + free-form thumb editor**
+1. **App-aware profiles** (post-MVP by design)
+2. **Bluetooth first-class smoke + Easy-Switch/host UI**
+3. **Thumb touch/proxy + free-form thumb editor**
+4. **Free-form Keypress / ChangeHost editor** (beyond common shortcuts)
 5. **SmartShift Enhanced / torque** on devices that support it
 6. **Flow / Actions Ring / firmware** — largely **impossible** on this stack
 

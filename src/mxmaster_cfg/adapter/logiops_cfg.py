@@ -81,11 +81,31 @@ def _render_action(action: dict[str, Any], *, indent: str) -> list[str]:
         lines.append(f"{indent}  keys: {_format_keys(keys)};")
     elif kind == "ToggleSmartShift":
         lines.append(f'{indent}  type: "ToggleSmartShift";')
+    elif kind == "ToggleHiresScroll":
+        lines.append(f'{indent}  type: "ToggleHiresScroll";')
     elif kind == "CycleDPI":
         dpis = action.get("dpis") or [400, 800, 1200, 1600]
         dpi_list = ", ".join(str(int(x)) for x in dpis)
         lines.append(f'{indent}  type: "CycleDPI";')
         lines.append(f"{indent}  dpis: [{dpi_list}];")
+        if action.get("sensor") is not None:
+            lines.append(f"{indent}  sensor: {int(action['sensor'])};")
+    elif kind == "ChangeDPI":
+        inc = action.get("inc", 50)
+        lines.append(f'{indent}  type: "ChangeDPI";')
+        lines.append(f"{indent}  inc: {int(inc)};")
+        if action.get("sensor") is not None:
+            lines.append(f"{indent}  sensor: {int(action['sensor'])};")
+    elif kind == "ChangeHost":
+        lines.append(f'{indent}  type: "ChangeHost";')
+        host = action.get("host")
+        if host is not None:
+            if isinstance(host, int):
+                lines.append(f"{indent}  host: {int(host)};")
+            else:
+                lines.append(f"{indent}  host: {_libconfig_string(str(host))};")
+    elif kind in {"None", "none", None}:
+        lines.append(f'{indent}  type: "None";')
     else:
         lines.append(f'{indent}  type: "{kind}";')
     lines.append(f"{indent}}}")
@@ -212,20 +232,10 @@ def _render_button(button: dict[str, Any]) -> str:
     action = button.get("action", {})
     kind = action.get("type", "None")
     lines = [f"        {{ cid: {cid};"]
-    if kind == "Keypress":
-        keys = action.get("keys") or []
-        lines.append("          action = {")
-        lines.append('            type: "Keypress";')
-        lines.append(f"            keys: {_format_keys(keys)};")
-        lines.append("          };")
-    elif kind == "ToggleSmartShift":
-        lines.append("          action = {")
-        lines.append('            type: "ToggleSmartShift";')
-        lines.append("          };")
-    elif kind == "Gestures":
+    if kind == "Gestures":
         lines.append("          action = {")
         lines.append('            type: "Gestures";')
-        lines.append(f'            gestures: (')
+        lines.append("            gestures: (")
         for g in action.get("gestures") or []:
             direction = g.get("direction", "None")
             mode = g.get("mode", "OnRelease")
@@ -233,46 +243,18 @@ def _render_button(button: dict[str, Any]) -> str:
             lines.append("              {")
             lines.append(f'                direction: "{direction}";')
             lines.append(f'                mode: "{mode}";')
-            g_type = g_action.get("type", "None")
-            if g_type == "Keypress":
-                keys = g_action.get("keys") or []
-                lines.append("                action = {")
-                lines.append('                  type: "Keypress";')
-                lines.append(f"                  keys: {_format_keys(keys)};")
-                lines.append("                };")
-            elif g_type == "CycleDPI":
-                dpis = g_action.get("dpis") or [400, 800, 1200, 1600]
-                dpi_list = ", ".join(str(int(x)) for x in dpis)
-                lines.append("                action = {")
-                lines.append('                  type: "CycleDPI";')
-                lines.append(f"                  dpis: [{dpi_list}];")
-                lines.append("                };")
-            elif g_type == "ToggleSmartShift":
-                lines.append("                action = {")
-                lines.append('                  type: "ToggleSmartShift";')
-                lines.append("                };")
-            elif g_type in {"None", "none", None}:
-                lines.append("                action = {")
-                lines.append('                  type: "None";')
-                lines.append("                };")
-            else:
-                lines.append("                action = {")
-                lines.append(f'                  type: "{g_type}";')
-                lines.append("                };")
+            lines.append("                action =")
+            a_lines = _render_action(g_action, indent="                ")
+            a_lines[-1] = a_lines[-1] + ";"
+            lines.extend(a_lines)
             lines.append("              },")
         lines.append("            );")
         lines.append("          };")
-    elif kind == "CycleDPI":
-        dpis = action.get("dpis") or [400, 800, 1200, 1600]
-        dpi_list = ", ".join(str(int(x)) for x in dpis)
-        lines.append("          action = {")
-        lines.append('            type: "CycleDPI";')
-        lines.append(f"            dpis: [{dpi_list}];")
-        lines.append("          };")
     else:
-        lines.append("          action = {")
-        lines.append(f'            type: "{kind}";')
-        lines.append("          };")
+        lines.append("          action =")
+        a_lines = _render_action(action, indent="          ")
+        a_lines[-1] = a_lines[-1] + ";"
+        lines.extend(a_lines)
     lines.append("        }")
     return "\n".join(lines)
 

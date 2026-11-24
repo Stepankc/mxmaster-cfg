@@ -23,7 +23,7 @@
 | DPI чтение/запись | **done** | Live `SetDPI` + cfg `dpi:` |
 | Шаг / диапазон DPI | **partial** | Слайдер 200–8000 / 50; устройство может clamp |
 | DPI Shift / dual DPI | **missing** | Нет UI «DPI пока зажато» |
-| CycleDPI на кнопке/жесте | **partial** | Пресет Left / remap CycleDPI |
+| CycleDPI на кнопке/жесте | **done** | Per-CID picker + пресет Left |
 | Тонкая настройка сенсора | **impossible** | Через IPC logiops не отдаётся |
 
 ## MagSpeed / SmartShift
@@ -63,15 +63,16 @@
 
 | CID (spike 3S) | Роль | Статус |
 |----------------|------|--------|
-| `0x50` / middle | СКМ | **missing** | Обычно middle ОС |
-| `0x52` | доп. | **missing** | Remappable на spike; нет ряда в GUI |
-| `0x53` | Back | **partial** | Комбо Forward/Back только меняет F/B |
-| `0x56` | Forward | **partial** | То же |
-| `0xc3` | Gesture | **partial** | Сетка пресетов |
-| `0xc4` | Mode / SmartShift | **partial** | ToggleSmartShift в примерах; не полный picker |
-| `0xd7` | доп. | **missing** | Remappable; нет GUI |
+| `0x50` | Левая | **impossible** / N/A | Не в remappable spike; ОС |
+| `0x52` | Средняя | **done** | Per-CID picker ([buttons.ru.md](buttons.ru.md)) |
+| `0x53` | Назад | **done** | Тот же picker (KEY_BACK) |
+| `0x56` | Вперёд | **done** | KEY_FORWARD |
+| `0xc3` | Жесты | **done** | Gestures + направления; или любое BasicAction |
+| `0xc4` | Режим / SmartShift | **done** | ToggleSmartShift по умолчанию; полный picker |
+| `0xd7` | Доп. | **done** | Picker (default = omit / firmware) |
 | OnInterval / Axis / RawXY жесты | **missing** | Только OnRelease пресеты |
 | Чувствительность жеста | **missing** | |
+| Свободный Keypress-редактор | **partial** | Частые ярлыки + custom при загрузке |
 
 ## Батарея / питание
 
@@ -124,10 +125,10 @@
 
 ## Главные дыры (на потом)
 
-1. **Полный редактор действий по всем CID**
-2. **App-aware профили** (post-MVP)
-3. **Bluetooth smoke + Easy-Switch/host UI**
-4. **Thumb touch/proxy + свободный редактор**
+1. **App-aware профили** (post-MVP)
+2. **Bluetooth smoke + Easy-Switch/host UI**
+3. **Thumb touch/proxy + свободный редактор**
+4. **Свободный Keypress / ChangeHost** (кроме частых ярлыков)
 5. **SmartShift Enhanced / torque** где поддерживается
 6. **Flow / Actions Ring / прошивка** — в основном **impossible**
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from queue import Empty, SimpleQueue
 from typing import Any, Callable
 
@@ -30,7 +31,19 @@ from PySide6.QtWidgets import (
 )
 
 from mxmaster_cfg.adapter.logiops_cfg import CfgWriter
-from mxmaster_cfg.adapter.logiops_dbus import CID_BACK, CID_FORWARD, CID_GESTURE
+from mxmaster_cfg.adapter.logiops_dbus import CID_GESTURE
+from mxmaster_cfg.buttons import (
+    ACTION_DEFAULT,
+    ACTION_GESTURES,
+    BUTTON_ACTION_PRESETS,
+    REMAPPABLE_BUTTONS,
+    action_signature,
+    button_label,
+    buttons_from_profile,
+    default_gesture_button_action,
+    match_button_preset,
+    preset_action,
+)
 from mxmaster_cfg.adapter.plasma_scroll import (
     SCROLL_FACTOR_DEFAULT,
     SCROLL_FACTOR_MAX,
@@ -54,6 +67,15 @@ from mxmaster_cfg.profiles import (
     load_named_profile,
     profiles_dir,
     save_named_profile,
+)
+from mxmaster_cfg.status_hold import (
+    AUTO_WAKE_COOLDOWN_S,
+    LAST_GOOD_HOLD_S,
+    WAKE_SETTLE_MS,
+    device_dicts,
+    should_auto_wake,
+    should_hold_last_good,
+    soft_miss_quirk,
 )
 
 # Live status poll (device + battery); does not overwrite slider positions.
@@ -145,14 +167,6 @@ class _ValueSlider(QWidget):
         self.lbl.setEnabled(enabled)
         super().setEnabled(enabled)
 
-# Remap presets for forward/back.
-REMAP_CHOICES: list[tuple[str, int, str]] = [
-    ("Forward → KEY_FORWARD (штатно)", CID_FORWARD, "forward"),
-    ("Forward → KEY_BACK", CID_FORWARD, "back"),
-    ("Back → KEY_BACK (штатно)", CID_BACK, "back"),
-    ("Back → KEY_FORWARD", CID_BACK, "forward"),
-]
-
 # Thumb wheel left/right gesture presets (need divert=true except "OS default").
 # Each entry: (label, gesture_dict | None). None = omit side (OS handles scroll).
 THUMB_SCROLL_PRESETS: list[tuple[str, dict[str, Any] | None]] = [
@@ -234,34 +248,10 @@ _DEFAULT_GESTURE_IDX = {
     "None": 5,  # Meta tap
 }
 
-CYCLE_DPI_LIST = [400, 600, 800, 1000, 1200, 1400, 1600]
-
-
-def _norm_cid(cid: Any) -> int | None:
-    if isinstance(cid, int):
-        return cid
-    if isinstance(cid, str):
-        text = cid.strip().lower()
-        if text.startswith("0x"):
-            return int(text, 16)
-        if text.isdigit():
-            return int(text)
-    return None
-
-
-def _action_signature(action: dict[str, Any] | None) -> tuple[Any, ...]:
-    if not isinstance(action, dict):
-        return ("None",)
-    kind = action.get("type", "None")
-    keys = tuple(action.get("keys") or [])
-    dpis = tuple(action.get("dpis") or [])
-    return (kind, keys, dpis)
-
-
 def _match_gesture_preset(action: dict[str, Any] | None) -> int:
-    sig = _action_signature(action)
+    sig = action_signature(action if isinstance(action, dict) else None)
     for idx, (_label, preset) in enumerate(GESTURE_PRESETS):
-        if _action_signature(preset) == sig:
+        if action_signature(preset) == sig:
             return idx
     return 0
 
@@ -271,7 +261,14 @@ def _gesture_actions_from_profile(profile: dict[str, Any]) -> dict[str, dict[str
     for button in profile.get("buttons") or []:
         if not isinstance(button, dict):
             continue
-        if _norm_cid(button.get("cid")) != CID_GESTURE:
+        cid_raw = button.get("cid")
+        if isinstance(cid_raw, int):
+            cid = cid_raw
+        elif isinstance(cid_raw, str) and cid_raw.lower().startswith("0x"):
+            cid = int(cid_raw, 16)
+        else:
+            continue
+        if cid != CID_GESTURE:
             continue
         action = button.get("action") or {}
         if action.get("type") != "Gestures":
@@ -327,42 +324,13 @@ def _match_thumb_scroll_preset(thumb: dict[str, Any]) -> int:
 def _match_thumb_tap_preset(tap: Any) -> int:
     if not isinstance(tap, dict):
         return 0
-    sig = _action_signature(tap)
+    sig = action_signature(tap)
     for idx, (_label, preset) in enumerate(THUMB_TAP_PRESETS):
         if preset is None:
             continue
-        if _action_signature(preset) == sig:
+        if action_signature(preset) == sig:
             return idx
     return 0
-
-
-def _match_remap_preset(profile: dict[str, Any]) -> int | None:
-    """Pick remap combo index from forward/back Keypress buttons."""
-    forward_keys: list[str] | None = None
-    back_keys: list[str] | None = None
-    for button in profile.get("buttons") or []:
-        if not isinstance(button, dict):
-            continue
-        cid = _norm_cid(button.get("cid"))
-        action = button.get("action") or {}
-        if action.get("type") != "Keypress":
-            continue
-        keys = list(action.get("keys") or [])
-        if cid == CID_FORWARD:
-            forward_keys = keys
-        elif cid == CID_BACK:
-            back_keys = keys
-    if forward_keys == ["KEY_FORWARD"] and (
-        back_keys in (None, ["KEY_BACK"])
-    ):
-        return 0
-    if forward_keys == ["KEY_BACK"]:
-        return 1
-    if back_keys == ["KEY_FORWARD"]:
-        return 3
-    if back_keys == ["KEY_BACK"] and forward_keys in (None, ["KEY_FORWARD"]):
-        return 2
-    return None
 
 
 class MainWindow(QMainWindow):
@@ -371,6 +339,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MX Master Config")
         self.resize(720, 800)
         self._last_status: dict[str, Any] = {}
+        # Last successful full-device status (dict devices); used on soft misses.
+        self._last_good_status: dict[str, Any] | None = None
+        self._last_good_monotonic: float = 0.0
+        self._last_wake_monotonic: float = 0.0
+        self._auto_wake_pending = False
         self._async_busy = False
         self._suppress_live = False
         self._initial_sync_done = False
@@ -386,6 +359,7 @@ class MainWindow(QMainWindow):
         ] = SimpleQueue()
         self._reconnect_left = 0
         self._reconnect_active = False
+        self._status_seq = 0
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -404,7 +378,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(
             QLabel(
                 "mxmaster-cfg · DPI · SmartShift · HiRes · ThumbWheel · "
-                "батарея · remap · жесты → polkit-helper → logid 0.3.5 (Bolt)."
+                "батарея · remap всех CID · жесты → polkit-helper → logid 0.3.5."
             )
         )
 
@@ -633,18 +607,42 @@ class MainWindow(QMainWindow):
         tw_form.addRow(self.lbl_tw_hint)
         layout.addWidget(tw_box)
 
-        # --- Remap ---
-        remap_box = QGroupBox("Remap Forward/Back")
+        # --- Button remaps (all remappable CIDs) ---
+        remap_box = QGroupBox("Remap кнопок (CID)")
         remap_form = QFormLayout(remap_box)
-        self.combo_remap = QComboBox()
-        for label, _cid, _preset in REMAP_CHOICES:
-            self.combo_remap.addItem(label)
-        remap_form.addRow("Кнопка:", self.combo_remap)
+        self.button_combos: dict[int, QComboBox] = {}
+        for info in REMAPPABLE_BUTTONS:
+            combo = QComboBox()
+            for preset_id, preset_label, _action in BUTTON_ACTION_PRESETS:
+                if (
+                    preset_id == ACTION_GESTURES
+                    and not info.supports_gestures
+                ):
+                    continue
+                combo.addItem(preset_label, preset_id)
+            # Select default for this button.
+            default_idx = 0
+            for i in range(combo.count()):
+                if combo.itemData(i) == info.default_preset:
+                    default_idx = i
+                    break
+            combo.setCurrentIndex(default_idx)
+            combo.currentIndexChanged.connect(self._on_button_action_changed)
+            self.button_combos[info.cid] = combo
+            remap_form.addRow(button_label(info, lang="ru") + ":", combo)
+        self.lbl_remap_hint = QLabel(
+            "По умолчанию = не писать в cfg (firmware/ОС). "
+            "Отключить = type None. Жесты — только для 0xc3. "
+            "Persist: «Применить в cfg»."
+        )
+        self.lbl_remap_hint.setWordWrap(True)
+        self.lbl_remap_hint.setStyleSheet("color: #555;")
+        remap_form.addRow(self.lbl_remap_hint)
         layout.addWidget(remap_box)
 
-        # --- Gestures ---
-        gest_box = QGroupBox("Жесты (кнопка Gesture, CID 0xc3)")
-        gest_form = QFormLayout(gest_box)
+        # --- Gestures (directions for CID 0xc3 when action = Gestures) ---
+        self.gest_box = QGroupBox("Жесты (кнопка Gesture, CID 0xc3)")
+        gest_form = QFormLayout(self.gest_box)
         self.gesture_combos: dict[str, QComboBox] = {}
         labels = {
             "Up": "Вверх",
@@ -660,7 +658,8 @@ class MainWindow(QMainWindow):
             combo.setCurrentIndex(_DEFAULT_GESTURE_IDX.get(direction, 0))
             self.gesture_combos[direction] = combo
             gest_form.addRow(f"{labels[direction]}:", combo)
-        layout.addWidget(gest_box)
+        layout.addWidget(self.gest_box)
+        self._sync_gesture_box_enabled()
 
         # --- Named on-disk profiles (XDG) ---
         prof_box = QGroupBox("Профили (~/.config/mxmaster-cfg/profiles/)")
@@ -762,6 +761,12 @@ class MainWindow(QMainWindow):
         self._plasma_timer.setInterval(PLASMA_SCROLL_DEBOUNCE_MS)
         self._plasma_timer.timeout.connect(self._on_plasma_scroll_apply)
 
+        # After USB wake, wait before a full status (avoid wake→empty race).
+        self._wake_settle_timer = QTimer(self)
+        self._wake_settle_timer.setSingleShot(True)
+        self._wake_settle_timer.setInterval(WAKE_SETTLE_MS)
+        self._wake_settle_timer.timeout.connect(self._on_wake_settle)
+
         self.slider_dpi.slider.sliderReleased.connect(self._schedule_live_apply)
         self.slider_dpi.slider.valueChanged.connect(
             lambda _v: self._schedule_live_apply()
@@ -790,31 +795,70 @@ class MainWindow(QMainWindow):
         # Initial load after the window is shown (sync sliders from device once).
         QTimer.singleShot(0, lambda: self._on_refresh(sync_controls=True))
 
-    def _build_profile(self) -> dict[str, Any]:
-        label, cid, preset = REMAP_CHOICES[self.combo_remap.currentIndex()]
-        _ = label
-        dpi = int(self.slider_dpi.value())
-        keys = ["KEY_FORWARD"] if preset == "forward" else ["KEY_BACK"]
-        other_cid = CID_BACK if cid == CID_FORWARD else CID_FORWARD
-        other_keys = ["KEY_BACK"] if other_cid == CID_BACK else ["KEY_FORWARD"]
+    def _selected_button_preset(self, cid: int) -> str:
+        combo = self.button_combos.get(cid)
+        if combo is None:
+            return ACTION_DEFAULT
+        data = combo.currentData()
+        if isinstance(data, str):
+            return data
+        return ACTION_DEFAULT
 
-        gestures: list[dict[str, Any]] = []
+    def _on_button_action_changed(self, _index: int = 0) -> None:
+        self._sync_gesture_box_enabled()
+
+    def _sync_gesture_box_enabled(self) -> None:
+        """Show direction grid only when Gesture CID uses Gestures mode."""
+        enabled = self._selected_button_preset(CID_GESTURE) == ACTION_GESTURES
+        self.gest_box.setEnabled(enabled)
+        self.gest_box.setVisible(True)
+
+    def _build_gesture_direction_actions(self) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
         for direction in GESTURE_DIRS:
             idx = self.gesture_combos[direction].currentIndex()
             action = dict(GESTURE_PRESETS[idx][1])
-            # Deep-ish copy for nested lists
             if "keys" in action:
                 action["keys"] = list(action["keys"])
             if "dpis" in action:
                 action["dpis"] = list(action["dpis"])
-            mode = "OnRelease"
-            gestures.append(
+            out[direction] = action
+        return out
+
+    def _build_buttons(self) -> list[dict[str, Any]]:
+        """Build profile ``buttons`` from per-CID pickers (omit Default)."""
+        buttons: list[dict[str, Any]] = []
+        for info in REMAPPABLE_BUTTONS:
+            preset_id = self._selected_button_preset(info.cid)
+            if preset_id == ACTION_DEFAULT:
+                continue
+            if preset_id == ACTION_GESTURES:
+                action = default_gesture_button_action(
+                    self._build_gesture_direction_actions()
+                )
+            elif preset_id == "key_custom":
+                combo = self.button_combos[info.cid]
+                custom = combo.property("custom_action")
+                if not isinstance(custom, dict):
+                    continue
+                action = dict(custom)
+                if "keys" in action:
+                    action["keys"] = list(action["keys"] or [])
+            else:
+                action = preset_action(preset_id)
+                if action is None:
+                    continue
+            buttons.append(
                 {
-                    "direction": direction,
-                    "mode": mode,
+                    "cid": info.cid,
+                    "label": info.key,
                     "action": action,
                 }
             )
+        return buttons
+
+    def _build_profile(self) -> dict[str, Any]:
+        dpi = int(self.slider_dpi.value())
 
         smartshift: dict[str, Any] = {
             "on": self.chk_ss_on.isChecked(),
@@ -840,21 +884,7 @@ class MainWindow(QMainWindow):
             "smartshift": smartshift,
             "hiresscroll": hiresscroll,
             "thumbwheel": thumbwheel,
-            "buttons": [
-                {
-                    "cid": CID_GESTURE,
-                    "label": "gesture",
-                    "action": {"type": "Gestures", "gestures": gestures},
-                },
-                {
-                    "cid": cid,
-                    "action": {"type": "Keypress", "keys": keys},
-                },
-                {
-                    "cid": other_cid,
-                    "action": {"type": "Keypress", "keys": other_keys},
-                },
-            ],
+            "buttons": self._build_buttons(),
         }
 
     def _scroll_multiplier(self) -> float:
@@ -1094,8 +1124,16 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage("Ошибка: %s" % value)
 
+    def _next_status_seq(self) -> int:
+        self._status_seq += 1
+        return self._status_seq
+
     def _on_refresh(self, *, sync_controls: bool = True) -> None:
+        seq = self._next_status_seq()
+
         def _ok(data: dict[str, Any]) -> None:
+            if seq != self._status_seq:
+                return  # stale — a newer status/wake superseded this
             self._apply_status_data(data, sync_controls=sync_controls)
 
         if not self._run_async(
@@ -1121,7 +1159,11 @@ class MainWindow(QMainWindow):
         if self.slider_plasma_scroll.slider.isSliderDown():
             return
 
+        seq = self._next_status_seq()
+
         def _ok(data: dict[str, Any]) -> None:
+            if seq != self._status_seq:
+                return
             self._apply_status_data(data, sync_controls=False)
 
         def _err(_exc: BaseException) -> None:
@@ -1182,6 +1224,116 @@ class MainWindow(QMainWindow):
                 "  scripts/install-helper.sh",
             )
 
+    def _remember_good_status(self, data: dict[str, Any]) -> None:
+        self._last_good_status = data
+        self._last_good_monotonic = time.monotonic()
+
+    def _hold_last_good_ui(self, empty_data: dict[str, Any]) -> bool:
+        """Keep last device labels on a soft D-Bus miss; start reconnect."""
+        now = time.monotonic()
+        good = self._last_good_status
+        if not should_hold_last_good(
+            has_devices=False,
+            last_good=good,
+            last_good_mono=self._last_good_monotonic,
+            now_mono=now,
+            hold_s=LAST_GOOD_HOLD_S,
+        ):
+            return False
+        assert good is not None
+        age = now - self._last_good_monotonic
+        # Re-paint from last good without touching slider positions.
+        held = dict(good)
+        held["quirk"] = soft_miss_quirk(age)
+        held["held_last_good"] = True
+        held["empty_poll"] = {
+            "logid_active": empty_data.get("logid_active"),
+            "quirk": empty_data.get("quirk"),
+        }
+        self._last_status = held
+        devices = device_dicts(good)
+        dev = devices[0]
+        self.lbl_name.setText(str(dev.get("name") or "?"))
+        self.lbl_path.setText(str(dev.get("path") or "?"))
+        pid = dev.get("product_id")
+        self.lbl_pid.setText(str(pid) if pid is not None else "—")
+        self._apply_battery_label(dev)
+        self.lbl_quirk.setText(str(held["quirk"]))
+        self.statusBar().showMessage(
+            "devices=0 (держим снимок) · logid=%s · опрос…"
+            % empty_data.get("logid_active")
+        )
+        if not self._reconnect_active:
+            self._start_reconnect()
+        self._maybe_auto_wake(empty_data)
+        return True
+
+    def _clear_device_labels(self, data: dict[str, Any]) -> None:
+        self.lbl_name.setText("(нет)")
+        self.lbl_path.setText("—")
+        self.lbl_pid.setText("—")
+        self.lbl_battery.setText("—")
+        quirk = data.get("quirk") or "Устройство не найдено."
+        self.lbl_quirk.setText(str(quirk))
+        self.statusBar().showMessage(
+            "logid active=%s, devices=0 — пошевелите мышь или "
+            "«Разбудить ресивер» (Bolt)"
+            % data.get("logid_active")
+        )
+
+    def _maybe_auto_wake(self, data: dict[str, Any]) -> None:
+        """Soft USB wake when count=0, with cooldown (no wake-race)."""
+        now = time.monotonic()
+        if not should_auto_wake(
+            has_devices=False,
+            now_mono=now,
+            last_wake_mono=self._last_wake_monotonic,
+            cooldown_s=AUTO_WAKE_COOLDOWN_S,
+            blocked=(
+                self._async_busy
+                or self._auto_wake_pending
+                or self._wake_settle_timer.isActive()
+            ),
+        ):
+            return
+        _ = data
+        self._auto_wake_pending = True
+        self._last_wake_monotonic = now
+        self.statusBar().showMessage("Auto wake Bolt… (pkexec)")
+
+        def _ok(result: dict[str, Any]) -> None:
+            self._auto_wake_pending = False
+            self._last_wake_monotonic = time.monotonic()
+            # Do not apply path-only wake payload; settle then status.
+            if not self._reconnect_active:
+                self._start_reconnect()
+            self._wake_settle_timer.start()
+            woke = result.get("bolt_usb_wake")
+            self.statusBar().showMessage(
+                "Auto wake %s — ждём settle %s мс…"
+                % ("OK" if woke else "skip", WAKE_SETTLE_MS)
+            )
+
+        def _err(exc: BaseException) -> None:
+            self._auto_wake_pending = False
+            self.statusBar().showMessage("Auto wake: %s" % exc)
+
+        if not self._run_async(
+            wake_receiver,
+            _ok,
+            on_err=_err,
+            busy_message="Auto wake Bolt… (pkexec)",
+        ):
+            self._auto_wake_pending = False
+
+    def _on_wake_settle(self) -> None:
+        """Full status after USB wake settle — avoids empty race right after."""
+        if self._async_busy:
+            # Try again shortly once helper is free.
+            self._wake_settle_timer.start()
+            return
+        self._on_refresh(sync_controls=True)
+
     def _apply_status_data(
         self,
         data: dict[str, Any],
@@ -1190,21 +1342,17 @@ class MainWindow(QMainWindow):
         sync_controls: bool = True,
     ) -> None:
         self._last_status = data
-        devices = data.get("devices") or []
+        devices = device_dicts(data)
         if not devices:
-            self.lbl_name.setText("(нет)")
-            self.lbl_path.setText("—")
-            self.lbl_pid.setText("—")
-            self.lbl_battery.setText("—")
-            quirk = data.get("quirk") or "Устройство не найдено."
-            self.lbl_quirk.setText(str(quirk))
-            self.statusBar().showMessage(
-                "logid active=%s, devices=0 — пошевелите мышь или "
-                "«Разбудить ресивер» (Bolt)"
-                % data.get("logid_active")
-            )
+            if self._hold_last_good_ui(data):
+                return
+            self._clear_device_labels(data)
+            self._maybe_auto_wake(data)
+            if not self._reconnect_active:
+                self._start_reconnect()
             return
 
+        self._remember_good_status(data)
         if clear_reconnect:
             self._stop_reconnect(clear_message=False)
 
@@ -1424,11 +1572,22 @@ class MainWindow(QMainWindow):
         ss = profile.get("smartshift") or {}
         hr = profile.get("hiresscroll") or {}
         tw = profile.get("thumbwheel") or {}
-        gestures = []
         buttons = profile.get("buttons") or []
-        if buttons:
-            action = (buttons[0] or {}).get("action") or {}
-            gestures = action.get("gestures") or []
+        gesture_dirs = 0
+        for button in buttons:
+            if not isinstance(button, dict):
+                continue
+            action = button.get("action") or {}
+            if action.get("type") == "Gestures":
+                gesture_dirs = len(action.get("gestures") or [])
+                break
+        remap_cids = []
+        for button in buttons:
+            if isinstance(button, dict) and button.get("cid") is not None:
+                cid = button["cid"]
+                remap_cids.append(
+                    hex(cid) if isinstance(cid, int) else str(cid)
+                )
         if profile_name:
             msg = (
                 f"Профиль «{profile_name}» применён.\n"
@@ -1447,7 +1606,8 @@ class MainWindow(QMainWindow):
                 f"target={hr.get('target')} "
                 f"mult={hr.get('scroll_multiplier', '—')}\n"
                 f"ThumbWheel: divert={tw.get('divert')} invert={tw.get('invert')}\n"
-                f"Жесты: CID 0xc3 ({len(gestures)} направлений)\n"
+                f"Remap: {', '.join(remap_cids) or '—'}"
+                f" (жесты 0xc3: {gesture_dirs} напр.)\n"
                 f"devices: {devices}\n"
                 f"bolt_usb_wake: {result.get('bolt_usb_wake')}"
             )
@@ -1492,22 +1652,37 @@ class MainWindow(QMainWindow):
         if not self._reconnect_active:
             self._reconnect_timer.stop()
             return
-        if self._async_busy:
+        if self._async_busy or self._auto_wake_pending:
+            return
+        if self._wake_settle_timer.isActive():
             return
         if self._reconnect_left <= 0:
             self._stop_reconnect(clear_message=False)
-            self.statusBar().showMessage(
-                "Устройство не появилось — пошевелите мышь или "
-                "«Разбудить ресивер»"
-            )
+            # Hold UI if we still have a recent good snapshot.
+            if self._last_good_status and should_hold_last_good(
+                has_devices=False,
+                last_good=self._last_good_status,
+                last_good_mono=self._last_good_monotonic,
+                now_mono=time.monotonic(),
+            ):
+                self.statusBar().showMessage(
+                    "Опрос закончен — держим последний снимок; "
+                    "пошевелите мышь или «Разбудить ресивер»"
+                )
+            else:
+                self.statusBar().showMessage(
+                    "Устройство не появилось — пошевелите мышь или "
+                    "«Разбудить ресивер»"
+                )
             return
         self._reconnect_left -= 1
         left = self._reconnect_left
+        seq = self._next_status_seq()
 
         def _ok(data: dict[str, Any]) -> None:
-            if not self._reconnect_active:
+            if seq != self._status_seq:
                 return
-            devices = data.get("devices") or []
+            devices = device_dicts(data)
             if devices:
                 self._stop_reconnect(clear_message=True)
                 self._apply_status_data(
@@ -1518,10 +1693,23 @@ class MainWindow(QMainWindow):
                     % data.get("device_count")
                 )
                 return
+            # Soft miss: keep last good labels; do not clear to "(нет)".
+            if self._last_good_status and should_hold_last_good(
+                has_devices=False,
+                last_good=self._last_good_status,
+                last_good_mono=self._last_good_monotonic,
+                now_mono=time.monotonic(),
+            ):
+                self.lbl_quirk.setText(
+                    soft_miss_quirk(
+                        time.monotonic() - self._last_good_monotonic
+                    )
+                )
             self.statusBar().showMessage(
                 "Ожидание Bolt… ещё ~%s с (пошевелите мышь)"
                 % max(1, left * RECONNECT_POLL_MS // 1000)
             )
+            self._maybe_auto_wake(data)
 
         def _err(exc: BaseException) -> None:
             if self._reconnect_active:
@@ -1532,27 +1720,40 @@ class MainWindow(QMainWindow):
         self._run_async(status, _ok, on_err=_err)
 
     def _on_wake_receiver(self) -> None:
+        """Manual wake: USB toggle, then settle + status (no immediate race)."""
+
         def _ok(data: dict[str, Any]) -> None:
-            devices = data.get("devices") or []
-            if devices:
-                self._stop_reconnect(clear_message=True)
-                self.statusBar().showMessage(
-                    "Ресивер разбужен · devices=%s — обновляю…"
-                    % data.get("device_count")
-                )
-                self._on_refresh(sync_controls=True)
-            else:
-                quirk = data.get("quirk") or "devices=0"
-                self.lbl_quirk.setText(str(quirk))
-                self.statusBar().showMessage(
-                    "Wake OK, devices=0 — опрос…"
-                )
+            self._last_wake_monotonic = time.monotonic()
+            self._next_status_seq()  # invalidate in-flight status
+            path_hits = data.get("device_count") or len(
+                data.get("devices") or []
+            )
+            # Never apply path-string wake payload as full status.
+            if not self._reconnect_active:
                 self._start_reconnect()
+            self._wake_settle_timer.start()
+            self.statusBar().showMessage(
+                "Ресивер разбужен · paths=%s — settle %s мс, затем статус…"
+                % (path_hits, WAKE_SETTLE_MS)
+            )
+            if not path_hits and data.get("quirk"):
+                # Soft hint only; keep last-good labels if any.
+                if not (
+                    self._last_good_status
+                    and should_hold_last_good(
+                        has_devices=False,
+                        last_good=self._last_good_status,
+                        last_good_mono=self._last_good_monotonic,
+                        now_mono=time.monotonic(),
+                    )
+                ):
+                    self.lbl_quirk.setText(str(data.get("quirk")))
 
         def _err(exc: BaseException) -> None:
             QMessageBox.warning(self, "Разбудить ресивер", str(exc))
             self.statusBar().showMessage("Wake failed")
 
+        self._wake_settle_timer.stop()
         if not self._run_async(
             wake_receiver,
             _ok,
@@ -1735,6 +1936,41 @@ class MainWindow(QMainWindow):
                     _match_thumb_tap_preset(tw.get("tap"))
                 )
 
+            configured = buttons_from_profile(profile)
+            for info in REMAPPABLE_BUTTONS:
+                combo = self.button_combos.get(info.cid)
+                if combo is None:
+                    continue
+                if info.cid in configured:
+                    preset_id = match_button_preset(configured[info.cid])
+                else:
+                    preset_id = ACTION_DEFAULT
+                # Unknown Keypress → show as custom row once.
+                if preset_id == "key_custom":
+                    act = configured[info.cid]
+                    keys = ",".join(act.get("keys") or [])
+                    custom_label = f"Keypress ({keys})"
+                    # Reuse existing custom item if present.
+                    found = -1
+                    for i in range(combo.count()):
+                        if combo.itemData(i) == "key_custom":
+                            found = i
+                            combo.setItemText(i, custom_label)
+                            break
+                    if found < 0:
+                        combo.addItem(custom_label, "key_custom")
+                        found = combo.count() - 1
+                    # Stash raw action on the combo for build.
+                    combo.setProperty("custom_action", act)
+                    combo.setCurrentIndex(found)
+                else:
+                    idx = 0
+                    for i in range(combo.count()):
+                        if combo.itemData(i) == preset_id:
+                            idx = i
+                            break
+                    combo.setCurrentIndex(idx)
+
             for direction, action in _gesture_actions_from_profile(
                 profile
             ).items():
@@ -1742,10 +1978,7 @@ class MainWindow(QMainWindow):
                     self.gesture_combos[direction].setCurrentIndex(
                         _match_gesture_preset(action)
                     )
-
-            remap_idx = _match_remap_preset(profile)
-            if remap_idx is not None:
-                self.combo_remap.setCurrentIndex(remap_idx)
+            self._sync_gesture_box_enabled()
         finally:
             self._suppress_live = prev
             self._live_timer.stop()

@@ -11,6 +11,13 @@ If `device_count` is still **0**:
 2. Move the mouse (Easy-Switch on the Bolt channel) — often enough.
 3. Or press **Wake receiver** (`wake-receiver` helper) for another soft USB reset,
    then the same poll continues.
+4. The GUI may **auto wake-receiver** once when count stays 0 (cooldown ~45 s)
+   so you are not stuck after Apply.
+
+**Soft miss / no wake-race:** after a successful status, a brief empty poll
+(common for ~2 s after USB wake) **keeps the last good device** in the UI
+instead of flashing “(нет)”. Wake always waits a short settle (~2.5 s) before
+the next full status so an in-flight empty result cannot wipe a good snapshot.
 
 When the device reappears, the status line is cleared/updated and the form
 refreshes. Device/battery status keeps polling about every **15 s** (slider

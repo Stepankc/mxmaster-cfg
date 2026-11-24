@@ -39,10 +39,21 @@ IFACE_BUTTONS = "pizza.pixl.LogiOps.Buttons"
 IFACE_RECEIVERS = "pizza.pixl.LogiOps.Receivers"
 
 # Observed on MX Master 3S (Bolt) spike — remappable CIDs.
+# Canonical catalogue: :mod:`mxmaster_cfg.buttons`.
+CID_MIDDLE = 0x52
 CID_BACK = 0x53
 CID_FORWARD = 0x56
 CID_GESTURE = 0xC3
 CID_MODE = 0xC4
+CID_EXTRA = 0xD7
+REMAPPABLE_CIDS = (
+    CID_MIDDLE,
+    CID_BACK,
+    CID_FORWARD,
+    CID_GESTURE,
+    CID_MODE,
+    CID_EXTRA,
+)
 
 
 class LogiOpsDBusError(RuntimeError):
