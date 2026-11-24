@@ -4,6 +4,10 @@
 Spike (Bolt) remappable CIDs: ``0x52 0x53 0x56 0xc3 0xc4 0xd7``.
 Persistence is via logiops cfg (``CfgWriter``) + ``logid`` restart — not live
 ``Button.SetAction``.
+
+Free-form Keypress and ChangeHost (host index / next / prev) are first-class
+picker options; unknown Keypress/ChangeHost from cfg/profile load as custom
+and round-trip through apply-cfg.
 """
 
 from __future__ import annotations
@@ -26,6 +30,99 @@ CHANGE_DPI_STEP = 50
 ACTION_DEFAULT = "__default__"
 # Sentinel: keep Gestures action; directions edited separately.
 ACTION_GESTURES = "__gestures__"
+# Free-form Keypress (keys from editor / loaded unknown combo).
+ACTION_KEY_CUSTOM = "key_custom"
+# ChangeHost with host not covered by fixed channel presets.
+ACTION_CHANGE_HOST_CUSTOM = "change_host_custom"
+
+# Easy-Switch style channels (logiops host is 1-based in cfg).
+CHANGE_HOST_CHANNELS = (1, 2, 3)
+
+# Common KEY_* names for completer / docs (linux input-event-codes).
+COMMON_KEY_NAMES: tuple[str, ...] = (
+    "KEY_LEFTCTRL",
+    "KEY_LEFTALT",
+    "KEY_LEFTSHIFT",
+    "KEY_LEFTMETA",
+    "KEY_RIGHTCTRL",
+    "KEY_RIGHTALT",
+    "KEY_RIGHTSHIFT",
+    "KEY_RIGHTMETA",
+    "KEY_A",
+    "KEY_B",
+    "KEY_C",
+    "KEY_D",
+    "KEY_E",
+    "KEY_F",
+    "KEY_G",
+    "KEY_H",
+    "KEY_I",
+    "KEY_J",
+    "KEY_K",
+    "KEY_L",
+    "KEY_M",
+    "KEY_N",
+    "KEY_O",
+    "KEY_P",
+    "KEY_Q",
+    "KEY_R",
+    "KEY_S",
+    "KEY_T",
+    "KEY_U",
+    "KEY_V",
+    "KEY_W",
+    "KEY_X",
+    "KEY_Y",
+    "KEY_Z",
+    "KEY_0",
+    "KEY_1",
+    "KEY_2",
+    "KEY_3",
+    "KEY_4",
+    "KEY_5",
+    "KEY_6",
+    "KEY_7",
+    "KEY_8",
+    "KEY_9",
+    "KEY_F1",
+    "KEY_F2",
+    "KEY_F3",
+    "KEY_F4",
+    "KEY_F5",
+    "KEY_F6",
+    "KEY_F7",
+    "KEY_F8",
+    "KEY_F9",
+    "KEY_F10",
+    "KEY_F11",
+    "KEY_F12",
+    "KEY_TAB",
+    "KEY_ENTER",
+    "KEY_ESC",
+    "KEY_SPACE",
+    "KEY_BACKSPACE",
+    "KEY_DELETE",
+    "KEY_INSERT",
+    "KEY_HOME",
+    "KEY_END",
+    "KEY_PAGEUP",
+    "KEY_PAGEDOWN",
+    "KEY_UP",
+    "KEY_DOWN",
+    "KEY_LEFT",
+    "KEY_RIGHT",
+    "KEY_BACK",
+    "KEY_FORWARD",
+    "KEY_MUTE",
+    "KEY_VOLUMEUP",
+    "KEY_VOLUMEDOWN",
+    "KEY_PLAYPAUSE",
+    "KEY_NEXTSONG",
+    "KEY_PREVIOUSSONG",
+    "KEY_STOPCD",
+    "KEY_PRINT",
+    "KEY_CAPSLOCK",
+)
 
 
 @dataclass(frozen=True)
@@ -111,11 +208,91 @@ def _copy_action(action: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-# Preset id → (combo label RU, profile action | None for Default).
+def normalize_key_token(token: str) -> str:
+    """Normalize a typed key to ``KEY_*`` (uppercase)."""
+    text = token.strip().upper().replace("-", "_").replace(" ", "_")
+    if not text:
+        return ""
+    if text.startswith("KEY_"):
+        return text
+    # Bare letter/name → KEY_*
+    return f"KEY_{text}"
+
+
+def parse_keys_text(text: str) -> list[str]:
+    """Parse free-form Keypress text (``+``, comma, whitespace separated)."""
+    if not text or not str(text).strip():
+        return []
+    raw = str(text).replace("+", " ").replace(",", " ").replace(";", " ")
+    out: list[str] = []
+    for part in raw.split():
+        key = normalize_key_token(part)
+        if key:
+            out.append(key)
+    return out
+
+
+def format_keys_text(keys: list[str] | tuple[str, ...] | None) -> str:
+    """Display form for Keypress keys (``KEY_A + KEY_B``)."""
+    if not keys:
+        return ""
+    return " + ".join(str(k) for k in keys)
+
+
+def normalize_host(host: Any) -> int | str | None:
+    """Normalize ChangeHost ``host`` to int (1-based) or next/prev."""
+    if host is None:
+        return None
+    if isinstance(host, bool):
+        return None
+    if isinstance(host, int):
+        return host
+    if isinstance(host, float) and host == int(host):
+        return int(host)
+    if isinstance(host, str):
+        text = host.strip().lower()
+        if not text:
+            return None
+        if text in {"next"}:
+            return "next"
+        if text in {"prev", "previous"}:
+            return "prev"
+        if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+            return int(text)
+        return text
+    return None
+
+
+def change_host_action(host: int | str) -> dict[str, Any]:
+    return {"type": "ChangeHost", "host": normalize_host(host) or host}
+
+
+def custom_keypress_action(keys: list[str] | None) -> dict[str, Any]:
+    return {"type": "Keypress", "keys": list(keys or [])}
+
+
+def change_host_preset_id(host: int | str | None) -> str:
+    """Map a normalized host to a preset id."""
+    h = normalize_host(host)
+    if h in CHANGE_HOST_CHANNELS:
+        return f"change_host_{h}"
+    if h == "next":
+        return "change_host_next"
+    if h == "prev":
+        return "change_host_prev"
+    return ACTION_CHANGE_HOST_CUSTOM
+
+
+# Preset id → (combo label RU/EN mix, profile action | None for Default).
 # None action means omit from cfg (firmware default).
 BUTTON_ACTION_PRESETS: list[tuple[str, str, dict[str, Any] | None]] = [
     (ACTION_DEFAULT, "По умолчанию (ОС / firmware)", None),
     ("disable", "Отключить (None)", {"type": "None"}),
+    (
+        ACTION_KEY_CUSTOM,
+        "Keypress (свой… / custom)",
+        {"type": "Keypress", "keys": []},
+    ),
     (
         "key_forward",
         "Keypress KEY_FORWARD",
@@ -222,6 +399,36 @@ BUTTON_ACTION_PRESETS: list[tuple[str, str, dict[str, Any] | None]] = [
         {"type": "ToggleHiresScroll"},
     ),
     (
+        "change_host_1",
+        "ChangeHost → канал / host 1",
+        {"type": "ChangeHost", "host": 1},
+    ),
+    (
+        "change_host_2",
+        "ChangeHost → канал / host 2",
+        {"type": "ChangeHost", "host": 2},
+    ),
+    (
+        "change_host_3",
+        "ChangeHost → канал / host 3",
+        {"type": "ChangeHost", "host": 3},
+    ),
+    (
+        "change_host_next",
+        "ChangeHost next",
+        {"type": "ChangeHost", "host": "next"},
+    ),
+    (
+        "change_host_prev",
+        "ChangeHost prev",
+        {"type": "ChangeHost", "host": "prev"},
+    ),
+    (
+        ACTION_CHANGE_HOST_CUSTOM,
+        "ChangeHost (свой host…)",
+        {"type": "ChangeHost", "host": 1},
+    ),
+    (
         ACTION_GESTURES,
         "Gesture mode (направления ниже)",
         {"type": "Gestures", "gestures": []},
@@ -259,7 +466,7 @@ def action_signature(action: dict[str, Any] | None) -> tuple[Any, ...]:
     keys = tuple(action.get("keys") or [])
     dpis = tuple(action.get("dpis") or [])
     inc = action.get("inc")
-    host = action.get("host")
+    host = normalize_host(action.get("host"))
     return (kind, keys, dpis, inc, host)
 
 
@@ -270,18 +477,60 @@ def match_button_preset(action: dict[str, Any] | None) -> str:
     kind = action.get("type")
     if kind == "Gestures":
         return ACTION_GESTURES
+    if kind == "ChangeHost":
+        return change_host_preset_id(action.get("host"))
     sig = action_signature(action)
     for pid, _label, preset in BUTTON_ACTION_PRESETS:
         if preset is None:
             continue
+        if pid in {ACTION_KEY_CUSTOM, ACTION_CHANGE_HOST_CUSTOM}:
+            continue
         if action_signature(preset) == sig:
             return pid
-    # Unknown Keypress / custom → closest Keypress display via synthetic id.
+    # Unknown Keypress / custom → free-form editor.
     if kind == "Keypress":
-        return "key_custom"
+        return ACTION_KEY_CUSTOM
     if kind == "None":
         return "disable"
     return ACTION_DEFAULT
+
+
+def resolve_button_action(
+    preset_id: str,
+    *,
+    keys_text: str | None = None,
+    custom_keys: list[str] | None = None,
+    host: int | str | None = None,
+    gesture_directions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Build the profile action for a picker selection (UI model helper).
+
+    Returns ``None`` for Default (omit from cfg). Empty custom Keypress still
+    emits ``Keypress`` with ``keys: []`` so the choice round-trips.
+    """
+    if preset_id == ACTION_DEFAULT:
+        return None
+    if preset_id == ACTION_GESTURES:
+        return default_gesture_button_action(gesture_directions or {})
+    if preset_id == ACTION_KEY_CUSTOM:
+        if custom_keys is not None:
+            keys = list(custom_keys)
+        else:
+            keys = parse_keys_text(keys_text or "")
+        return custom_keypress_action(keys)
+    if preset_id == ACTION_CHANGE_HOST_CUSTOM:
+        h = normalize_host(host)
+        if h is None:
+            h = 1
+        return change_host_action(h)
+    if preset_id.startswith("change_host_"):
+        base = preset_action(preset_id)
+        if base is not None:
+            return base
+    action = preset_action(preset_id)
+    if action is None:
+        return None
+    return action
 
 
 def buttons_from_profile(profile: dict[str, Any]) -> dict[int, dict[str, Any]]:

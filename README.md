@@ -31,8 +31,9 @@ button remap, and gesture button (CID `0xc3`).
 - **Thumb wheel** (`ThumbWheel` / `0x2150`): divert, invert, left/right/tap presets
 - **Battery** % + charging (Unified Battery `0x1004` via short hidraw probe;
   UPower/sysfs when the kernel exposes it; logiops 0.3.5 D-Bus has no Battery)
-- **Full button remap** for all remappable CIDs (`0x52`…`0xd7`) + **gesture**
-  directions on `0xc3` (persist via `/etc/logid.cfg` + `logid` restart) —
+- **Full button remap** for all remappable CIDs (`0x52`…`0xd7`): free-form
+  **Keypress**, **ChangeHost** (Easy-Switch), presets, + **gesture** directions
+  on `0xc3` (persist via `/etc/logid.cfg` + `logid` restart) —
   [docs/buttons.md](docs/buttons.md)
 - **Named on-disk profiles** (YAML/JSON) under `~/.config/mxmaster-cfg/profiles/` —
   list / Save as / Load / Apply to device / Delete (not app-specific)
