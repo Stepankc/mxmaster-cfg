@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import time
 from queue import Empty, SimpleQueue
 from typing import Any, Callable
 
@@ -66,6 +67,15 @@ from mxmaster_cfg.profiles import (
     load_named_profile,
     profiles_dir,
     save_named_profile,
+)
+from mxmaster_cfg.status_hold import (
+    AUTO_WAKE_COOLDOWN_S,
+    LAST_GOOD_HOLD_S,
+    WAKE_SETTLE_MS,
+    device_dicts,
+    should_auto_wake,
+    should_hold_last_good,
+    soft_miss_quirk,
 )
 
 # Live status poll (device + battery); does not overwrite slider positions.
@@ -329,6 +339,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("MX Master Config")
         self.resize(720, 800)
         self._last_status: dict[str, Any] = {}
+        # Last successful full-device status (dict devices); used on soft misses.
+        self._last_good_status: dict[str, Any] | None = None
+        self._last_good_monotonic: float = 0.0
+        self._last_wake_monotonic: float = 0.0
+        self._auto_wake_pending = False
         self._async_busy = False
         self._suppress_live = False
         self._initial_sync_done = False
@@ -344,6 +359,7 @@ class MainWindow(QMainWindow):
         ] = SimpleQueue()
         self._reconnect_left = 0
         self._reconnect_active = False
+        self._status_seq = 0
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -745,6 +761,12 @@ class MainWindow(QMainWindow):
         self._plasma_timer.setInterval(PLASMA_SCROLL_DEBOUNCE_MS)
         self._plasma_timer.timeout.connect(self._on_plasma_scroll_apply)
 
+        # After USB wake, wait before a full status (avoid wake→empty race).
+        self._wake_settle_timer = QTimer(self)
+        self._wake_settle_timer.setSingleShot(True)
+        self._wake_settle_timer.setInterval(WAKE_SETTLE_MS)
+        self._wake_settle_timer.timeout.connect(self._on_wake_settle)
+
         self.slider_dpi.slider.sliderReleased.connect(self._schedule_live_apply)
         self.slider_dpi.slider.valueChanged.connect(
             lambda _v: self._schedule_live_apply()
@@ -1102,8 +1124,16 @@ class MainWindow(QMainWindow):
             else:
                 self.statusBar().showMessage("Ошибка: %s" % value)
 
+    def _next_status_seq(self) -> int:
+        self._status_seq += 1
+        return self._status_seq
+
     def _on_refresh(self, *, sync_controls: bool = True) -> None:
+        seq = self._next_status_seq()
+
         def _ok(data: dict[str, Any]) -> None:
+            if seq != self._status_seq:
+                return  # stale — a newer status/wake superseded this
             self._apply_status_data(data, sync_controls=sync_controls)
 
         if not self._run_async(
@@ -1129,7 +1159,11 @@ class MainWindow(QMainWindow):
         if self.slider_plasma_scroll.slider.isSliderDown():
             return
 
+        seq = self._next_status_seq()
+
         def _ok(data: dict[str, Any]) -> None:
+            if seq != self._status_seq:
+                return
             self._apply_status_data(data, sync_controls=False)
 
         def _err(_exc: BaseException) -> None:
@@ -1190,6 +1224,116 @@ class MainWindow(QMainWindow):
                 "  scripts/install-helper.sh",
             )
 
+    def _remember_good_status(self, data: dict[str, Any]) -> None:
+        self._last_good_status = data
+        self._last_good_monotonic = time.monotonic()
+
+    def _hold_last_good_ui(self, empty_data: dict[str, Any]) -> bool:
+        """Keep last device labels on a soft D-Bus miss; start reconnect."""
+        now = time.monotonic()
+        good = self._last_good_status
+        if not should_hold_last_good(
+            has_devices=False,
+            last_good=good,
+            last_good_mono=self._last_good_monotonic,
+            now_mono=now,
+            hold_s=LAST_GOOD_HOLD_S,
+        ):
+            return False
+        assert good is not None
+        age = now - self._last_good_monotonic
+        # Re-paint from last good without touching slider positions.
+        held = dict(good)
+        held["quirk"] = soft_miss_quirk(age)
+        held["held_last_good"] = True
+        held["empty_poll"] = {
+            "logid_active": empty_data.get("logid_active"),
+            "quirk": empty_data.get("quirk"),
+        }
+        self._last_status = held
+        devices = device_dicts(good)
+        dev = devices[0]
+        self.lbl_name.setText(str(dev.get("name") or "?"))
+        self.lbl_path.setText(str(dev.get("path") or "?"))
+        pid = dev.get("product_id")
+        self.lbl_pid.setText(str(pid) if pid is not None else "—")
+        self._apply_battery_label(dev)
+        self.lbl_quirk.setText(str(held["quirk"]))
+        self.statusBar().showMessage(
+            "devices=0 (держим снимок) · logid=%s · опрос…"
+            % empty_data.get("logid_active")
+        )
+        if not self._reconnect_active:
+            self._start_reconnect()
+        self._maybe_auto_wake(empty_data)
+        return True
+
+    def _clear_device_labels(self, data: dict[str, Any]) -> None:
+        self.lbl_name.setText("(нет)")
+        self.lbl_path.setText("—")
+        self.lbl_pid.setText("—")
+        self.lbl_battery.setText("—")
+        quirk = data.get("quirk") or "Устройство не найдено."
+        self.lbl_quirk.setText(str(quirk))
+        self.statusBar().showMessage(
+            "logid active=%s, devices=0 — пошевелите мышь или "
+            "«Разбудить ресивер» (Bolt)"
+            % data.get("logid_active")
+        )
+
+    def _maybe_auto_wake(self, data: dict[str, Any]) -> None:
+        """Soft USB wake when count=0, with cooldown (no wake-race)."""
+        now = time.monotonic()
+        if not should_auto_wake(
+            has_devices=False,
+            now_mono=now,
+            last_wake_mono=self._last_wake_monotonic,
+            cooldown_s=AUTO_WAKE_COOLDOWN_S,
+            blocked=(
+                self._async_busy
+                or self._auto_wake_pending
+                or self._wake_settle_timer.isActive()
+            ),
+        ):
+            return
+        _ = data
+        self._auto_wake_pending = True
+        self._last_wake_monotonic = now
+        self.statusBar().showMessage("Auto wake Bolt… (pkexec)")
+
+        def _ok(result: dict[str, Any]) -> None:
+            self._auto_wake_pending = False
+            self._last_wake_monotonic = time.monotonic()
+            # Do not apply path-only wake payload; settle then status.
+            if not self._reconnect_active:
+                self._start_reconnect()
+            self._wake_settle_timer.start()
+            woke = result.get("bolt_usb_wake")
+            self.statusBar().showMessage(
+                "Auto wake %s — ждём settle %s мс…"
+                % ("OK" if woke else "skip", WAKE_SETTLE_MS)
+            )
+
+        def _err(exc: BaseException) -> None:
+            self._auto_wake_pending = False
+            self.statusBar().showMessage("Auto wake: %s" % exc)
+
+        if not self._run_async(
+            wake_receiver,
+            _ok,
+            on_err=_err,
+            busy_message="Auto wake Bolt… (pkexec)",
+        ):
+            self._auto_wake_pending = False
+
+    def _on_wake_settle(self) -> None:
+        """Full status after USB wake settle — avoids empty race right after."""
+        if self._async_busy:
+            # Try again shortly once helper is free.
+            self._wake_settle_timer.start()
+            return
+        self._on_refresh(sync_controls=True)
+
     def _apply_status_data(
         self,
         data: dict[str, Any],
@@ -1198,21 +1342,17 @@ class MainWindow(QMainWindow):
         sync_controls: bool = True,
     ) -> None:
         self._last_status = data
-        devices = data.get("devices") or []
+        devices = device_dicts(data)
         if not devices:
-            self.lbl_name.setText("(нет)")
-            self.lbl_path.setText("—")
-            self.lbl_pid.setText("—")
-            self.lbl_battery.setText("—")
-            quirk = data.get("quirk") or "Устройство не найдено."
-            self.lbl_quirk.setText(str(quirk))
-            self.statusBar().showMessage(
-                "logid active=%s, devices=0 — пошевелите мышь или "
-                "«Разбудить ресивер» (Bolt)"
-                % data.get("logid_active")
-            )
+            if self._hold_last_good_ui(data):
+                return
+            self._clear_device_labels(data)
+            self._maybe_auto_wake(data)
+            if not self._reconnect_active:
+                self._start_reconnect()
             return
 
+        self._remember_good_status(data)
         if clear_reconnect:
             self._stop_reconnect(clear_message=False)
 
@@ -1512,22 +1652,37 @@ class MainWindow(QMainWindow):
         if not self._reconnect_active:
             self._reconnect_timer.stop()
             return
-        if self._async_busy:
+        if self._async_busy or self._auto_wake_pending:
+            return
+        if self._wake_settle_timer.isActive():
             return
         if self._reconnect_left <= 0:
             self._stop_reconnect(clear_message=False)
-            self.statusBar().showMessage(
-                "Устройство не появилось — пошевелите мышь или "
-                "«Разбудить ресивер»"
-            )
+            # Hold UI if we still have a recent good snapshot.
+            if self._last_good_status and should_hold_last_good(
+                has_devices=False,
+                last_good=self._last_good_status,
+                last_good_mono=self._last_good_monotonic,
+                now_mono=time.monotonic(),
+            ):
+                self.statusBar().showMessage(
+                    "Опрос закончен — держим последний снимок; "
+                    "пошевелите мышь или «Разбудить ресивер»"
+                )
+            else:
+                self.statusBar().showMessage(
+                    "Устройство не появилось — пошевелите мышь или "
+                    "«Разбудить ресивер»"
+                )
             return
         self._reconnect_left -= 1
         left = self._reconnect_left
+        seq = self._next_status_seq()
 
         def _ok(data: dict[str, Any]) -> None:
-            if not self._reconnect_active:
+            if seq != self._status_seq:
                 return
-            devices = data.get("devices") or []
+            devices = device_dicts(data)
             if devices:
                 self._stop_reconnect(clear_message=True)
                 self._apply_status_data(
@@ -1538,10 +1693,23 @@ class MainWindow(QMainWindow):
                     % data.get("device_count")
                 )
                 return
+            # Soft miss: keep last good labels; do not clear to "(нет)".
+            if self._last_good_status and should_hold_last_good(
+                has_devices=False,
+                last_good=self._last_good_status,
+                last_good_mono=self._last_good_monotonic,
+                now_mono=time.monotonic(),
+            ):
+                self.lbl_quirk.setText(
+                    soft_miss_quirk(
+                        time.monotonic() - self._last_good_monotonic
+                    )
+                )
             self.statusBar().showMessage(
                 "Ожидание Bolt… ещё ~%s с (пошевелите мышь)"
                 % max(1, left * RECONNECT_POLL_MS // 1000)
             )
+            self._maybe_auto_wake(data)
 
         def _err(exc: BaseException) -> None:
             if self._reconnect_active:
@@ -1552,27 +1720,40 @@ class MainWindow(QMainWindow):
         self._run_async(status, _ok, on_err=_err)
 
     def _on_wake_receiver(self) -> None:
+        """Manual wake: USB toggle, then settle + status (no immediate race)."""
+
         def _ok(data: dict[str, Any]) -> None:
-            devices = data.get("devices") or []
-            if devices:
-                self._stop_reconnect(clear_message=True)
-                self.statusBar().showMessage(
-                    "Ресивер разбужен · devices=%s — обновляю…"
-                    % data.get("device_count")
-                )
-                self._on_refresh(sync_controls=True)
-            else:
-                quirk = data.get("quirk") or "devices=0"
-                self.lbl_quirk.setText(str(quirk))
-                self.statusBar().showMessage(
-                    "Wake OK, devices=0 — опрос…"
-                )
+            self._last_wake_monotonic = time.monotonic()
+            self._next_status_seq()  # invalidate in-flight status
+            path_hits = data.get("device_count") or len(
+                data.get("devices") or []
+            )
+            # Never apply path-string wake payload as full status.
+            if not self._reconnect_active:
                 self._start_reconnect()
+            self._wake_settle_timer.start()
+            self.statusBar().showMessage(
+                "Ресивер разбужен · paths=%s — settle %s мс, затем статус…"
+                % (path_hits, WAKE_SETTLE_MS)
+            )
+            if not path_hits and data.get("quirk"):
+                # Soft hint only; keep last-good labels if any.
+                if not (
+                    self._last_good_status
+                    and should_hold_last_good(
+                        has_devices=False,
+                        last_good=self._last_good_status,
+                        last_good_mono=self._last_good_monotonic,
+                        now_mono=time.monotonic(),
+                    )
+                ):
+                    self.lbl_quirk.setText(str(data.get("quirk")))
 
         def _err(exc: BaseException) -> None:
             QMessageBox.warning(self, "Разбудить ресивер", str(exc))
             self.statusBar().showMessage("Wake failed")
 
+        self._wake_settle_timer.stop()
         if not self._run_async(
             wake_receiver,
             _ok,
