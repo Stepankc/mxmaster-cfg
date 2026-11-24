@@ -1,5 +1,6 @@
 helper/mxmaster-cfg-helper usr/libexec/
 polkit/org.mxmaster.cfg.policy usr/share/polkit-1/actions/
 packaging/mxmaster-cfg.desktop usr/share/applications/
+packaging/icons/mxmaster-cfg.svg usr/share/icons/hicolor/scalable/apps/
 examples/profiles/* usr/share/mxmaster-cfg/examples/
 udev/99-mx-master-hidraw.rules usr/lib/udev/rules.d/

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mxmaster-cfg"
-version = "0.2.0"
+version = "0.2.1"
 description = "Linux GUI for Logitech MX Master (logiops): DPI, SmartShift, gestures, hi-res scroll — Debian/Ubuntu/Kubuntu"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

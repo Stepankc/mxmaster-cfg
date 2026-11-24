@@ -1,3 +1,12 @@
+mxmaster-cfg (0.2.1-1) unstable; urgency=medium
+
+  * Desktop launcher polish: icon, install-desktop.sh for local run.sh.
+  * Battery auto-refresh (~45s) off the UI thread; wake-receiver helper.
+  * Reconnect poll after apply-cfg when device_count=0; clear status.
+  * Window/app title: MX Master Config (drop TBD naming).
+
+ -- Stepan Korobkov <stepan.korobkov@maergroup.ru>  Tue, 24 Nov 2026 07:40:00 +0000
+
 mxmaster-cfg (0.2.0-1) unstable; urgency=medium
 
   * Named XDG profiles (save/load/delete/apply) under
