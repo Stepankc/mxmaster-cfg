@@ -473,18 +473,19 @@ class MainWindow(QMainWindow):
             display_decimals=2,
         )
         self.slider_plasma_scroll.setToolTip(
-            "Plasma ScrollFactor в ~/.config/kcminputrc (как "
-            "Параметры системы → Мышь → Скорость прокрутки). "
-            "Живая запись с --notify. Без divert — страница всегда скроллится. "
+            "Plasma/KWin scrollFactor: live D-Bus на Wayland "
+            "(org.kde.KWin.InputDevice.scrollFactor) + persist в "
+            "~/.config/kcminputrc. Одного kwriteconfig --notify мало — "
+            "композитор не подхватывает. Без divert. "
             "Меньше = меньше строк на щелчок трещотки."
         )
         self.lbl_plasma_scroll = QLabel("устройство: —")
         self.lbl_plasma_scroll.setStyleSheet("color: #555;")
         self.lbl_plasma_scroll.setWordWrap(True)
         self.lbl_plasma_hint = QLabel(
-            "Основной безопасный путь на Kubuntu/Wayland. HID++ не умеет "
-            "«строк на щелчок» — этот слайдер пишет ScrollFactor для "
-            "Logitech-указателей (Bolt: USB Receiver Mouse)."
+            "Kubuntu/Wayland: слайдер сразу меняет KWin scrollFactor "
+            "(Bolt: Logitech USB Receiver Mouse 1133:50504). HID++ не умеет "
+            "«строк на щелчок». Без divert страница всегда скроллится."
         )
         self.lbl_plasma_hint.setWordWrap(True)
         scroll_form.addRow("Скорость:", self.slider_plasma_scroll)
@@ -977,31 +978,36 @@ class MainWindow(QMainWindow):
         self._plasma_timer.start()
 
     def _on_plasma_scroll_apply(self) -> None:
-        """Debounced user-level ScrollFactor write (no pkexec / divert)."""
+        """Debounced ScrollFactor: kcminputrc + live KWin D-Bus (Wayland)."""
         if self._suppress_live:
             return
         factor = self._plasma_scroll_factor()
         try:
             written = apply_scroll_factor(factor)
-        except (OSError, subprocess.SubprocessError, ValueError) as exc:
-            self.lbl_plasma_scroll.setText(f"ошибка ScrollFactor: {exc}")
+        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
+            self.lbl_plasma_scroll.setText(f"ошибка scrollFactor: {exc}")
             self.statusBar().showMessage(f"Plasma scroll: {exc}")
             return
         if not written:
             self.lbl_plasma_scroll.setText(
-                "устройство: нет Logitech-мыши — ScrollFactor не записан"
+                "устройство: нет Logitech-мыши — scrollFactor не записан"
             )
             self.statusBar().showMessage(
                 "Plasma scroll: указатель Logitech не найден"
             )
             return
-        names = ", ".join(t.name for t in written)
+        live_nodes = [t.event_node for t in written if t.event_node]
+        live_bit = (
+            f" · KWin live {', '.join(live_nodes)}"
+            if live_nodes
+            else " · только файл (нет KWin node)"
+        )
         self.lbl_plasma_scroll.setText(
-            f"устройство: {written[0].label()}"
-            + (f" · записано {len(written)}" if len(written) > 1 else "")
+            f"устройство: {written[0].label()}{live_bit}"
         )
         self.statusBar().showMessage(
-            f"Plasma ScrollFactor {factor:.2f}× → {names}"
+            f"KWin scrollFactor {factor:.2f}× → {written[0].name}"
+            + (f" ({live_nodes[0]})" if live_nodes else "")
         )
 
     def _build_thumbwheel(self) -> dict[str, Any]:

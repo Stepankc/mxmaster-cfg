@@ -26,21 +26,23 @@ GUI сбрасывает hi-res при включении SmartShift и по у�
 выключенным. Apply пишет `hires: false; target: false;`, пока не включён
 экспериментальный divert.
 
-## Основной GUI: Plasma ScrollFactor
+## Основной GUI: Plasma / KWin scrollFactor
 
 Безопасный путь (по умолчанию): **без divert**, страница всегда скроллится.
 
 1. **Экспериментально: скорость через divert** — снят.
 2. **Hi-res** — снят, пока включён SmartShift/ratchet.
-3. Слайдер **Скорость скролла (Plasma)** (0.10× … 2.00×) — как DPI. Пишет
-   `ScrollFactor` в `~/.config/kcminputrc` через `kwriteconfig6 --notify`.
-4. На стенде Bolt указатель обычно
-   `Logitech USB Receiver Mouse` (`1133` / `50504` = `046d:c548`).
+3. Слайдер **Скорость скролла (Plasma)** (0.10× … 2.00×) — как DPI. На
+   **Wayland** сразу ставит live
+   `org.kde.KWin.InputDevice.scrollFactor` **и** пишет `ScrollFactor` в
+   `~/.config/kcminputrc`. Одного `kwriteconfig6 --notify` **недостаточно** —
+   композитор файл сам не подхватывает.
+4. На стенде Bolt: `Logitech USB Receiver Mouse`
+   (`1133` / `50504` = `046d:c548`, часто `event8`).
 
 Поле профиля: `plasma_scroll_factor` (также при **Применить в cfg**).
 
-Тот же параметр: Параметры системы → **Мышь и тачпад** → **Мышь** →
-**Скорость прокрутки**.
+Параметры системы → **Мышь** → **Скорость прокрутки** — то же свойство KWin.
 
 ## Безопасность (divert)
 

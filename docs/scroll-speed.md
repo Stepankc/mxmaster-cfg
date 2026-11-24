@@ -26,23 +26,25 @@ The GUI turns hi-res **off** when you enable SmartShift, and defaults hi-res
 unchecked. Apply writes `hires: false; target: false;` unless you opt into
 experimental divert.
 
-## Primary GUI: Plasma ScrollFactor
+## Primary GUI: Plasma / KWin scrollFactor
 
 Safe path (default): **no divert**, page scroll always works.
 
 1. Leave **Экспериментально: скорость через divert** unchecked.
 2. Keep **Hi-res** unchecked while SmartShift/ratchet is on.
 3. Move **Скорость скролла (Plasma)** (0.10× … 2.00×) — same idea as the DPI
-   slider. Writes `ScrollFactor` under
-   `[Libinput][<vendor>][<product>][<name>]` in `~/.config/kcminputrc` with
-   `kwriteconfig6 --notify`.
-4. On the Bolt stand the pointer is typically
-   `Logitech USB Receiver Mouse` (`1133` / `50504` = `046d:c548`).
+   slider. On **Wayland** this Sets live
+   `org.kde.KWin.InputDevice.scrollFactor` **and** persists
+   `ScrollFactor` in `~/.config/kcminputrc`. File-only
+   `kwriteconfig6 --notify` does **not** change the running compositor.
+4. On the Bolt stand the pointer is
+   `Logitech USB Receiver Mouse` (`1133` / `50504` = `046d:c548`, often
+   `event8`).
 
 Profile field: `plasma_scroll_factor` (also applied on **Применить в cfg**).
 
-You can still tweak the same value in System Settings → **Mouse & Touchpad** →
-**Mouse** → **Scroll speed**.
+System Settings → **Mouse & Touchpad** → **Mouse** → **Scroll speed** uses the
+same KWin property.
 
 ## Safety (divert)
 
